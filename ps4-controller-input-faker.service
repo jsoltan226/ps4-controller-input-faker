@@ -4,6 +4,8 @@ Description=PS4 Controller input faker
 [Service]
 ExecStart=/usr/local/bin/ps4-controller-input-faker
 Restart=on-failure
+User=nobody
+Group=input
 
 [Install]
 WantedBy=default.target

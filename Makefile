@@ -1,6 +1,6 @@
 # Platform and paths
 PLATFORM ?= linux
-PREFIX ?= /usr
+PREFIX ?= /usr/local
 
 ifeq ($(PREFIX), /data/data/com.termux/files/usr)
 TERMUX=1
@@ -46,6 +46,7 @@ EXEC = exec
 MKDIR = mkdir -p
 RMRF = rm -rf
 7Z = 7z
+INSTALL = install
 
 # Executable file Prefix/Suffix
 EXEPREFIX =
@@ -89,16 +90,18 @@ STRIP_OBJS = $(OBJDIR)/log.c.o
 EXE = $(BINDIR)/$(EXEPREFIX)main$(EXESUFFIX)
 TEST_LIB = $(TEST_BINDIR)/$(SO_PREFIX)libmain_test$(SO_SUFFIX)
 TEST_LIB_OBJS = $(filter-out $(_main_obj),$(OBJS))
-LIB = $(BINDIR)/$(SO_PREFIX)evdev-monitor$(SO_SUFFIX)
-LIB_OBJS = $(filter-out $(_main_obj),$(OBJS))
 EXEARGS =
+EXE_INSTALL_NAME = ps4-controller-input-faker
+EXE_INSTALL_DIR ?= $(PREFIX)/bin
+SYSTEMD_SERVICE_FILE = ps4-controller-input-faker.service
+SYSTEMD_SERVICE_INSTALL_DIR ?= /etc/systemd/system
 
-.PHONY: all release strip clean mostlyclean update run br tests build-tests run-tests debug-run bdr test-hooks
-.NOTPARALLEL: all release br bdr build-tests
+.PHONY: all release strip clean mostlyclean update run br tests build-tests run-tests debug-run bdr test-hooks install
+.NOTPARALLEL: all release br bdr build-tests install
 
 # Build targets
 all: CFLAGS = -ggdb -O0 -Wall
-all: $(OBJDIR) $(BINDIR) $(EXE) $(LIB)
+all: $(OBJDIR) $(BINDIR) $(EXE)
 
 release: LDFLAGS += -flto
 release: CFLAGS = -O3 -Wall -Werror -flto -DNDEBUG -DCGD_BUILDTYPE_RELEASE
@@ -109,16 +112,12 @@ br: all run
 # Output executable rules
 $(EXE): $(OBJS)
 	@$(DEBUGSTRIP) $(STRIP_OBJS) 2>/dev/null
-	@$(PRINTF) "CCLD 	%-30s %-30s\n" "$(EXE)" "<= $^"
+	@$(PRINTF) "CCLD 	%-40s %-40s\n" "$(EXE)" "<= $^"
 	@$(CCLD) $(LDFLAGS) -o $(EXE) $(OBJS) $(LIBS)
 
 $(TEST_LIB): $(TEST_LIB_OBJS)
-	@$(PRINTF) "CCLD 	%-30s %-30s\n" "$(TEST_LIB)" "<= $(TEST_LIB_OBJS)"
+	@$(PRINTF) "CCLD 	%-40s %-40s\n" "$(TEST_LIB)" "<= $(TEST_LIB_OBJS)"
 	@$(CCLD) $(SO_LDFLAGS) -o $(TEST_LIB) $(TEST_LIB_OBJS) $(LIBS)
-
-$(LIB): $(LIB_OBJS)
-	@$(PRINTF) "CCLD 	%-30s %-30s\n" "$(LIB)" "<= $(LIB_OBJS)"
-	@$(CCLD) $(SO_LDFLAGS) -o $(LIB) $(LIB_OBJS) $(LIBS)
 
 # Output directory rules
 $(OBJDIR):
@@ -135,15 +134,15 @@ $(TEST_BINDIR):
 
 # Generic compilation targets
 $(OBJDIR)/%.c.o: %.c Makefile
-	@$(PRINTF) "CC 	%-30s %-30s\n" "$@" "<= $<"
+	@$(PRINTF) "CC 	%-40s %-40s\n" "$@" "<= $<"
 	@$(CC) $(DEPFLAGS) $(COMMON_CFLAGS) $(CFLAGS) -c -o $@ $<
 
 $(OBJDIR)/%.c.o: */%.c Makefile
-	@$(PRINTF) "CC 	%-30s %-30s\n" "$@" "<= $<"
+	@$(PRINTF) "CC 	%-40s %-40s\n" "$@" "<= $<"
 	@$(CC) $(DEPFLAGS) $(COMMON_CFLAGS) $(CFLAGS) -c -o $@ $<
 
 $(OBJDIR)/%.c.o: $(PLATFORM_SRCDIR)/$(PLATFORM)/%.c Makefile
-	@$(PRINTF) "CC 	%-30s %-30s\n" "$@" "<= $<"
+	@$(PRINTF) "CC 	%-40s %-40s\n" "$@" "<= $<"
 	@$(CC) $(DEPFLAGS) $(COMMON_CFLAGS) $(CFLAGS) -c -o $@ $<
 
 
@@ -158,7 +157,7 @@ tests: build-tests test-hooks
 	@n_passed=0; \
 	$(ECHO) -n > $(TEST_LOGFILE); \
 	for i in $(TEST_EXES); do \
-		$(PRINTF) "EXEC	%-30s " "$$i"; \
+		$(PRINTF) "EXEC	%-40s " "$$i"; \
 		if CGD_TEST_LOG_FILE="$(TEST_LOGFILE)" $$i >/dev/null 2>&1; then \
 			$(PRINTF) "$(GREEN)OK$(COL_RESET)\n"; \
 			n_passed="$$((n_passed + 1))"; \
@@ -184,8 +183,24 @@ compile-tests: $(TEST_EXES)
 
 $(TEST_BINDIR)/$(EXEPREFIX)%$(EXESUFFIX): CFLAGS = -ggdb -O0 -Wall
 $(TEST_BINDIR)/$(EXEPREFIX)%$(EXESUFFIX): $(TEST_SRC_DIR)/%.c Makefile
-	@$(PRINTF) "CCLD	%-30s %-30s\n" "$@" "<= $< $(TEST_LIB)"
+	@$(PRINTF) "CCLD	%-40s %-40s\n" "$@" "<= $< $(TEST_LIB)"
 	@$(CC) $(COMMON_CFLAGS) $(CFLAGS) -o $@ $< $(LDFLAGS) $(TEST_LIB) $(LIBS)
+
+
+# Installation targets
+install: $(EXE_INSTALL_DIR) $(SYSTEMD_SERVICE_INSTALL_DIR) all $(SYSTEMD_SERVICE_FILE)
+	@$(PRINTF) "INSTALL	%-40s %-40s\n" "$(EXE)" "=> $(EXE_INSTALL_DIR)/$(EXE_INSTALL_NAME)"
+	@$(INSTALL) -o 'root' -g 'root' -m '0755' "$(EXE)" "$(EXE_INSTALL_DIR)/$(EXE_INSTALL_NAME)"
+	@$(PRINTF) "INSTALL	%-40s %-40s\n" "$(SYSTEMD_SERVICE_FILE)" "=> $(SYSTEMD_SERVICE_INSTALL_DIR)/$(SYSTEMD_SERVICE_FILE)"
+	@$(INSTALL) -o 'root' -g 'root' -m '0755' "$(SYSTEMD_SERVICE_FILE)" "$(SYSTEMD_SERVICE_INSTALL_DIR)/$(SYSTEMD_SERVICE_FILE)"
+
+$(EXE_INSTALL_DIR):
+	@$(ECHO) "MKDIR	$(EXE_INSTALL_DIR)"
+	@$(MKDIR) $(EXE_INSTALL_DIR)
+
+$(SYSTEMD_SERVICE_INSTALL_DIR):
+	@$(ECHO) "MKDIR	$(SYSTEMD_SERVICE_INSTALL_DIR)"
+	@$(MKDIR) $(SYSTEMD_SERVICE_INSTALL_DIR)
 
 # Cleanup targets
 mostlyclean:

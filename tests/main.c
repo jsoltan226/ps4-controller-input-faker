@@ -1,5 +1,5 @@
-#include <linux/input-event-codes.h>
 #define _GNU_SOURCE
+#define P_INTERNAL_GUARD__
 #include "jsdev.h"
 #include "evdev.h"
 #include "monitor.h"
@@ -18,6 +18,7 @@
 #include <unistd.h>
 #include <signal.h>
 #include <linux/input.h>
+#include <linux/input-event-codes.h>
 
 #define MODULE_NAME "main"
 
@@ -69,17 +70,17 @@ err:
 static void __attribute_maybe_unused__ controller_test(void)
 {
     struct evdev controller = { 0 };
-    if (evdev_load(CONTROLLER_DEV, &controller, EVDEV_PS4_CONTROLLER))
+    if (evdev_load(CONTROLLER_DEV, &controller, EVDEV_MASK_PS4_CONTROLLER))
         goto_error("Failed to load the main controller device.");
     s_log_debug("Opened controller as fd %i", controller.fd);
 
     struct evdev motion_sensors = { 0 };
-    if (evdev_load(MOTION_SENSORS_DEV, &motion_sensors, EVDEV_PS4_CONTROLLER_MOTION_SENSOR))
+    if (evdev_load(MOTION_SENSORS_DEV, &motion_sensors, EVDEV_MASK_PS4_CONTROLLER_MOTION_SENSORS))
         goto_error("Failed to load the motion sensors device.");
     s_log_debug("Opened sensors as fd %i", motion_sensors.fd);
 
     struct evdev touchpad = { 0 };
-    if (evdev_load(TOUCHPAD_DEV, &touchpad, EVDEV_PS4_CONTROLLER_TOUCHPAD))
+    if (evdev_load(TOUCHPAD_DEV, &touchpad, EVDEV_MASK_PS4_CONTROLLER_TOUCHPAD))
         goto_error("Failed to load the touchpad device.");
     s_log_debug("Opened touchpad as fd %i", touchpad.fd);
 
@@ -129,7 +130,7 @@ static void __attribute_maybe_unused__ keyboard_test(void)
     kb.kbdevs = vector_new(struct evdev);
     kb.poll_fds = vector_new(struct pollfd);
     struct evdev tmp = { 0 };
-    if (evdev_load(KEYBOARD_DEV, &tmp, EVDEV_KEYBOARD))
+    if (evdev_load(KEYBOARD_DEV, &tmp, EVDEV_MASK_KEYBOARD))
         goto_error("Failed to load the keyboard device");
     vector_push_back(kb.kbdevs, tmp);
     vector_push_back(kb.poll_fds, (struct pollfd) {
@@ -165,7 +166,7 @@ static void read_dev(i32 fd)
 static void __attribute_maybe_unused__ hotplug_test(void)
 {
     VECTOR(struct evdev) devices =
-        evdev_find_and_load_devices(EVDEV_TYPE_AUTO);
+        evdev_find_and_load_devices(EVDEV_MASK_AUTO);
     if (devices == NULL)
         goto_error("Failed to load event devices");
     for (u32 i = 0; i < vector_size(devices); i++) {
@@ -198,7 +199,7 @@ static void __attribute_maybe_unused__ hotplug_test(void)
             struct evdev new_dev = { 0 };
             if (strncmp(created[i], "event", u_strlen("event"))) {
                 /* Not an evdev */
-            } else if (evdev_load(created[i], &new_dev, EVDEV_TYPE_AUTO)) {
+            } else if (evdev_load(created[i], &new_dev, EVDEV_MASK_AUTO)) {
                 //s_log_debug("Failed to load event device %s", created[i]);
             } else {
                 s_log_info("New device: \"%s\" (%s), type %s",
@@ -248,8 +249,8 @@ static void __attribute_maybe_unused__ hotplug_test(void)
             {
                 /* Device disconnected */
             } else if (poll_fds[i].revents & POLLIN) {
-                if (devices[i].type != EVDEV_PS4_CONTROLLER &&
-                    devices[i].type != EVDEV_PS4_CONTROLLER_TOUCHPAD)
+                if (devices[i].type != EVDEV_TYPE_PS4_CONTROLLER &&
+                    devices[i].type != EVDEV_TYPE_PS4_CONTROLLER_TOUCHPAD)
                     continue;
 
                 struct input_event ev;
@@ -272,7 +273,7 @@ static void __attribute_maybe_unused__ hotplug_test(void)
                     } else {
                         struct evdev *kb_evdev = NULL;
                         for (u32 i = 0; i < vector_size(devices); i++) {
-                            if (devices[i].type == EVDEV_KEYBOARD) {
+                            if (devices[i].type == EVDEV_TYPE_KEYBOARD) {
                                 kb_evdev = &devices[i];
                                 break;
                             }
