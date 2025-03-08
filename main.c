@@ -1,7 +1,7 @@
-#include <linux/input.h>
-#include <sys/poll.h>
 #define _GNU_SOURCE
+#define P_INTERNAL_GUARD__
 #include "evdev.h"
+#undef P_INTERNAL_GUARD__
 #include "kbddev.h"
 #include "monitor.h"
 #include <core/int.h>
@@ -15,12 +15,14 @@
 #include <signal.h>
 #include <poll.h>
 #include <unistd.h>
+#include <linux/input.h>
 #include <linux/input-event-codes.h>
 
 #define MODULE_NAME "main"
 
 
 #define FAKE_KEYPRESS_EV_CODE KEY_F21
+#define WATCHED_DEVICE_TYPES (EVDEV_MASK_PS4_CONTROLLER)
 
 static i32 init_signal_handler(void);
 static void signal_handler(i32 sig_num);
@@ -52,14 +54,15 @@ int main(int argc, char **argv)
     if (kbddev_init(&fake_keyboard))
         goto_error("Couldn't initialize the fake keyboard device. Stop.");
 
+    VECTOR(struct evdev) devices =
+        evdev_find_and_load_devices(WATCHED_DEVICE_TYPES);
+    if (devices == NULL)
+        goto_error("Error while loading active event devices. Stop.");
+    s_log_debug("Loaded %u event device(s)", vector_size(devices));
+
     struct evdev_monitor mon = { 0 };
     if (evdev_monitor_init(&mon))
         goto_error("Failed to initialize the evdev monitor. Stop.");
-
-    VECTOR(struct evdev) devices =
-        evdev_find_and_load_devices(EVDEV_PS4_CONTROLLER);
-    if (devices == NULL)
-        goto_error("Error while loading active event devices. Stop.");
 
     VECTOR(struct pollfd) global_poll_fds = vector_new(struct pollfd);
     vector_reserve(global_poll_fds, 1 + vector_size(devices));
@@ -71,8 +74,10 @@ int main(int argc, char **argv)
 
     /* Init the device pollfds */
     for (u32 i = 0; i < vector_size(devices); i++) {
-        global_poll_fds[i].fd = devices[i].fd;
-        global_poll_fds[i].events = POLLIN;
+        vector_push_back(global_poll_fds, (struct pollfd) {
+            .fd = devices[i].fd,
+            .events = POLLIN,
+        });
     }
 
     (void) atomic_flag_test_and_set(&running);
@@ -116,12 +121,14 @@ int main(int argc, char **argv)
         }
     }
 
+    s_log_debug("Exited from the main loop, cleaning up...");
     ret = EXIT_SUCCESS;
 err:
     atomic_flag_clear(&running);
-    kbddev_destroy(&fake_keyboard);
-    evdev_list_destroy(&devices);
     evdev_monitor_destroy(&mon);
+    evdev_list_destroy(&devices);
+    kbddev_destroy(&fake_keyboard);
+    s_log_debug("Cleanup OK, exiting with code %i", ret);
     return ret;
 }
 
@@ -161,7 +168,7 @@ static i32 handle_monitor_event(struct evdev_monitor *mon,
         struct evdev new_dev = { 0 };
         if (strncmp(created[i], "event", u_strlen("event"))) {
             /* Not an evdev */
-        } else if (evdev_load(created[i], &new_dev, EVDEV_PS4_CONTROLLER)) {
+        } else if (evdev_load(created[i], &new_dev, WATCHED_DEVICE_TYPES)) {
             //s_log_debug("Failed to load event device %s", created[i]);
         } else {
             s_log_info("New device: \"%s\" (%s), type %s",
@@ -217,9 +224,6 @@ err:
 
 static i32 handle_device_event(struct evdev *dev, i32 kbddev_fd)
 {
-    if (dev->type != EVDEV_PS4_CONTROLLER)
-        return 0;
-
     struct input_event ev;
     i32 n_bytes_read = 0;
 

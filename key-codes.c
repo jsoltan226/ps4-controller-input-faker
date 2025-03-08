@@ -1,5 +1,7 @@
 #include "key-codes.h"
+#define P_INTERNAL_GUARD__
 #include "evdev.h"
+#undef P_INTERNAL_GUARD__
 #include <core/log.h>
 #include <core/util.h>
 #include <stdio.h>

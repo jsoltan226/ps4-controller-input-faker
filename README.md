@@ -1,4 +1,4 @@
-### PS4 Controller input faker
+# PS4 Controller input faker
 This is a little linux daemon that listens for active PS4 controller (Dualshock 4) input. When it detects something (a button press) it sends a fake keyboard event (for now `KEY_F21`) to the input subsystem.
 
 ## Why?

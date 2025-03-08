@@ -1,5 +1,7 @@
-#include "joystick-ev.h"
+#define P_INTERNAL_GUARD__
 #include "evdev.h"
+#undef P_INTERNAL_GUARD__
+#include "joystick-ev.h"
 #include "monitor.h"
 #include <core/int.h>
 #include <core/log.h>
@@ -19,7 +21,7 @@ void handle_monitor_event(struct evdev_monitor *mon, struct evdev *devices)
         struct evdev new_dev = { 0 };
         if (strncmp(created[i], "event", u_strlen("event"))) {
             /* Not an evdev */
-        } else if (evdev_load(created[i], &new_dev, EVDEV_TYPE_AUTO)) {
+        } else if (evdev_load(created[i], &new_dev, EVDEV_MASK_AUTO)) {
             s_log_debug("Failed to load event device %s", created[i]);
         } else {
             s_log_info("New device: \"%s\" (%s), type %s",

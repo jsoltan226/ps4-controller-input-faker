@@ -29,7 +29,8 @@ static i32 dev_input_event_scandir_filter(const struct dirent *dirent);
 static i32 ev_cap_check(i32 fd, const char *path, enum evdev_type type);
 static i32 ev_bit_check(const u64 bits[], u32 n_bits, const i32 *checks);
 
-VECTOR(struct evdev) evdev_find_and_load_devices(enum evdev_type type)
+VECTOR(struct evdev)
+evdev_find_and_load_devices(enum evdev_type_mask type_mask)
 {
     VECTOR(struct evdev) v = NULL;
     struct dirent **namelist = NULL;
@@ -55,7 +56,7 @@ VECTOR(struct evdev) evdev_find_and_load_devices(enum evdev_type type)
     u32 n_failed = 0;
     for (u32 i = 0; i < n_dirents; i++) {
         struct evdev tmp;
-        i32 r = evdev_load(namelist[i]->d_name, &tmp, type);
+        i32 r = evdev_load(namelist[i]->d_name, &tmp, type_mask);
 
         if (r < 0) { /* Opening failed */
             n_failed++;
@@ -112,13 +113,13 @@ err:
     return NULL;
 }
 
-i32 evdev_load(const char *rel_path, struct evdev *out, enum evdev_type type)
+i32 evdev_load(const char *rel_path, struct evdev *out,
+    enum evdev_type_mask type_mask)
 {
     u_check_params(rel_path != NULL && out != NULL);
-    u_check_params((type > 0 && type < EVDEV_N_TYPES)
-        || type == EVDEV_TYPE_AUTO);
     memset(out, 0, sizeof(struct evdev));
     out->initialized_ = true;
+    i32 err_ret = -1;
 
     strncpy(out->path, DEVINPUT_DIR "/", u_FILEPATH_MAX);
     strncat(out->path, rel_path,
@@ -147,23 +148,21 @@ i32 evdev_load(const char *rel_path, struct evdev *out, enum evdev_type type)
         s_log_warn("Failed to get name for event device %s: %s",
             out->path, strerror(errno));
     }
-    //s_log_debug("Trying \"%s\" (%s)...", out->name, out->path);
 
-    /* Silently fail if device is of invalid type */
-    out->type = EVDEV_UNKNOWN;
-    if (type == EVDEV_TYPE_AUTO) {
-        for (u32 i = 1; i < EVDEV_N_TYPES; i++) {
-            if (!ev_cap_check(out->fd, out->path, i)) {
-                out->type = i;
-                break;
-            }
+    /* Silently fail if device type doesn't match */
+    out->type = EVDEV_TYPE_UNKNOWN;
+    for (u32 i = 1; i < EVDEV_N_TYPES; i++) {
+        if ((type_mask & (1 << i)) &&
+            !ev_cap_check(out->fd, out->path, i))
+        {
+            out->type = i;
+            break;
         }
-        if (out->type == EVDEV_UNKNOWN)
-            goto err;
-    } else {
-        if (ev_cap_check(out->fd, out->path, type))
-            goto err;
-        out->type = type; }
+    }
+    if (out->type == EVDEV_TYPE_UNKNOWN) {
+        err_ret = 1;
+        goto err;
+    }
 
     return 0;
 
@@ -173,17 +172,20 @@ err:
         out->fd = -1;
     }
 
-    return 1;
+    return err_ret;
 }
 
 void evdev_list_destroy(VECTOR(struct evdev) *evdev_list_p)
 {
     if (evdev_list_p == NULL || *evdev_list_p == NULL)
         return;
-    for (u32 i = 0; i < vector_size(*evdev_list_p); i++) {
+
+    const u32 n_devs = vector_size(*evdev_list_p);
+    for (u32 i = 0; i < n_devs; i++) {
         evdev_destroy(&(*evdev_list_p)[i]);
     }
     vector_destroy(evdev_list_p);
+    s_log_debug("Destroyed %u device(s)", n_devs);
 }
 
 void evdev_destroy(struct evdev *e)
@@ -197,7 +199,7 @@ void evdev_destroy(struct evdev *e)
 
     memset(e->path, 0, u_FILEPATH_MAX);
     memset(e->name, 0, MAX_EVDEV_NAME_LEN);
-    e->type = EVDEV_UNKNOWN;
+    e->type = EVDEV_TYPE_UNKNOWN;
 }
 
 static i32 dev_input_event_scandir_filter(const struct dirent *dirent)

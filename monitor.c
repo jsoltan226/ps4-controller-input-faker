@@ -42,6 +42,7 @@ i32 evdev_monitor_init(struct evdev_monitor *o)
     if (o->fd < 0)
         goto_error("Failed to get the udev fd: %s", strerror(o->fd));
 
+    s_log_debug("Initialized a udev monitor with fd %i", o->fd);
     return 0;
 
 err:
@@ -155,6 +156,7 @@ void evdev_monitor_destroy(struct evdev_monitor *mon)
     if (mon == NULL)
         return;
 
+    s_log_debug("Destroying udev monitor...");
     /* Both udev_..._unref functions always return NULL */
     if (mon->mon != NULL) {
         (void) udev_monitor_unref(mon->mon);

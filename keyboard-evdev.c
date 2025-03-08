@@ -34,7 +34,7 @@ static void read_keyevents_from_evdev(i32 fd,
 i32 evdev_keyboard_init(struct keyboard_evdev *kb)
 {
     memset(kb, 0, sizeof(struct keyboard_evdev));
-    kb->kbdevs = evdev_find_and_load_devices(EVDEV_KEYBOARD);
+    kb->kbdevs = evdev_find_and_load_devices(EVDEV_MASK_KEYBOARD);
     if (kb->kbdevs == NULL)
         goto err;
 

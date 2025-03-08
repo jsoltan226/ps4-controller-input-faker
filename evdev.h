@@ -4,40 +4,50 @@
 #include <core/int.h>
 #include <core/util.h>
 #include <core/vector.h>
+#include <assert.h>
 #include <linux/input-event-codes.h>
 #include <linux/input.h>
 
 #ifdef CGD_CONFIG_PLATFORM_LINUX_EVDEV_PS4_CONTROLLER_SUPPORT
-#define EVDEV_TYPES_LIST    \
-    X_(EVDEV_UNKNOWN)       \
-    X_(EVDEV_KEYBOARD)      \
-    X_(EVDEV_MOUSE)         \
-    X_(EVDEV_PS4_CONTROLLER)    \
-    X_(EVDEV_PS4_CONTROLLER_TOUCHPAD) \
-    X_(EVDEV_PS4_CONTROLLER_MOTION_SENSOR) \
+#define EVDEV_TYPES_LIST                \
+    X_(UNKNOWN)                         \
+    X_(KEYBOARD)                        \
+    X_(MOUSE)                           \
+    X_(PS4_CONTROLLER)                  \
+    X_(PS4_CONTROLLER_TOUCHPAD)         \
+    X_(PS4_CONTROLLER_MOTION_SENSORS)   \
 
 #else
-#define EVDEV_TYPES_LIST    \
-    X_(EVDEV_UNKNOWN)       \
-    X_(EVDEV_KEYBOARD)      \
-    X_(EVDEV_MOUSE)         \
+#define EVDEV_TYPES_LIST                \
+    X_(UNKNOWN)                         \
+    X_(KEYBOARD)                        \
+    X_(MOUSE)                           \
 
 #endif /* CGD_CONFIG_PLATFORM_LINUX_EVDEV_PS4_CONTROLLER_SUPPORT */
 
-#define X_(name) name,
+#define X_(name) EVDEV_TYPE_##name,
 enum evdev_type {
     EVDEV_TYPE_AUTO = -1,
     EVDEV_TYPES_LIST
     EVDEV_N_TYPES
 };
 #undef X_
+#define X_(name) EVDEV_MASK_##name = 1 << EVDEV_TYPE_##name,
+enum evdev_type_mask {
+    EVDEV_MASK_AUTO = -1,
+    EVDEV_TYPES_LIST
+};
+#undef X_
+static_assert(sizeof(enum evdev_type_mask) <= sizeof(u32),
+    "The size of the evdev mask enum must be within the size of a u32.");
 
 #define EV_check_end_ (-1)
 #define EV_max_n_checks_ 256
 
+#ifdef P_INTERNAL_GUARD__
 static const i32
 evdev_type_checks[EVDEV_N_TYPES][EV_CNT][EV_max_n_checks_] = {
-    [EVDEV_KEYBOARD] = {
+    [EVDEV_TYPE_KEYBOARD] = {
         [0] = {
             EV_KEY, EV_check_end_
         },
@@ -51,7 +61,7 @@ evdev_type_checks[EVDEV_N_TYPES][EV_CNT][EV_max_n_checks_] = {
             EV_check_end_
         }
     },
-    [EVDEV_MOUSE] = {
+    [EVDEV_TYPE_MOUSE] = {
         [0] = {
             EV_KEY, EV_REL, EV_check_end_
         },
@@ -63,7 +73,7 @@ evdev_type_checks[EVDEV_N_TYPES][EV_CNT][EV_max_n_checks_] = {
         },
     },
 #ifdef CGD_CONFIG_PLATFORM_LINUX_EVDEV_PS4_CONTROLLER_SUPPORT
-    [EVDEV_PS4_CONTROLLER] = {
+    [EVDEV_TYPE_PS4_CONTROLLER] = {
         [0] = {
             EV_KEY, EV_ABS, EV_check_end_
         },
@@ -95,7 +105,7 @@ evdev_type_checks[EVDEV_N_TYPES][EV_CNT][EV_max_n_checks_] = {
             EV_check_end_
         },
     },
-    [EVDEV_PS4_CONTROLLER_TOUCHPAD] = {
+    [EVDEV_TYPE_PS4_CONTROLLER_TOUCHPAD] = {
         [0] = {
             EV_KEY, EV_ABS, EV_check_end_
         },
@@ -112,7 +122,7 @@ evdev_type_checks[EVDEV_N_TYPES][EV_CNT][EV_max_n_checks_] = {
             EV_check_end_
         },
     },
-    [EVDEV_PS4_CONTROLLER_MOTION_SENSOR] = {
+    [EVDEV_TYPE_PS4_CONTROLLER_MOTION_SENSORS] = {
         [0] = {
             EV_ABS, EV_check_end_
         },
@@ -155,11 +165,12 @@ union ev_bits_max_size__ {
     u64 ff_status[u_nbits(FF_STATUS_MAX + 1)];
 };
 
-#define X_(name) #name,
+#define X_(name) "EVDEV_" #name,
 static const char *const evdev_type_strings[] = {
     EVDEV_TYPES_LIST
 };
 #undef X_
+#endif /* P_INTERNAL_GUARD__ */
 
 #define MAX_EVDEV_NAME_LEN   512
 struct evdev {
@@ -175,11 +186,13 @@ struct evdev {
 #define MINIMAL_SUCCESSFUL_EVDEVS_LOADED 0.5f
 
 /* Returns NULL on failure */
-VECTOR(struct evdev) evdev_find_and_load_devices(enum evdev_type type);
+VECTOR(struct evdev)
+evdev_find_and_load_devices(enum evdev_type_mask type_mask);
 
 /* Used internally by `evdev_load_available_devices`.
  * Returns 0 on success and non-zero on failure */
-i32 evdev_load(const char *rel_path, struct evdev *out, enum evdev_type type);
+i32 evdev_load(const char *rel_path, struct evdev *out,
+    enum evdev_type_mask type_mask);
 
 /* Frees the memory and closes the file descriptors
  * associated with all devices in `*evdev_list_p`.

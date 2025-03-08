@@ -67,6 +67,7 @@ i32 kbddev_init(kbddev_t *kbddev_p)
         goto_error("uinput device creation failed: %s", strerror(errno));
     ret.dev_created__ = true;
 
+    s_log_debug("Created a fake keyboard device with fd %i", ret.fd);
     *kbddev_p = ret;
     return 0;
 err:
@@ -80,6 +81,7 @@ void kbddev_destroy(kbddev_t *kbddev_p)
     if (kbddev_p == NULL || kbddev_p->destroyed__)
         return;
 
+    s_log_debug("Destroying fake keyboard device...");
     if (kbddev_p->fd != -1) {
         if (kbddev_p->dev_created__) {
             if (ioctl(kbddev_p->fd, UI_DEV_DESTROY) == -1) {
