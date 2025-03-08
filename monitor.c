@@ -1,44 +1,109 @@
 #define _GNU_SOURCE
 #include "monitor.h"
+#include "librtld.h"
 #include <core/int.h>
 #include <core/log.h>
 #include <core/util.h>
 #include <core/vector.h>
 #include <errno.h>
 #include <string.h>
+#include <stdatomic.h>
 #include <poll.h>
 #include <fcntl.h>
 #include <dirent.h>
 #include <unistd.h>
+#include <pthread.h>
 #include <linux/limits.h>
-#include <libudev.h>
 
 #define MODULE_NAME "monitor"
 
 #define DEV_INPUT_DIR "/dev/input"
 
+#define LIBUDEV_LIBNAME "udev"
+#define LIBUDEV_FUNCTIONS_LIST                                              \
+    X_(struct udev *, udev_new, void)                                       \
+    X_(struct udev_monitor *, udev_monitor_new_from_netlink,                \
+        struct udev *udev, const char *name                                 \
+    )                                                                       \
+    X_(int, udev_monitor_filter_add_match_subsystem_devtype,                \
+        struct udev_monitor *udev_monitor,                                  \
+        const char *subsystem, const char *devtype                          \
+    )                                                                       \
+    X_(int, udev_monitor_enable_receiving,                                  \
+        struct udev_monitor *udev_monitor                                   \
+    )                                                                       \
+    X_(int, udev_monitor_get_fd, struct udev_monitor *udev_monitor)         \
+    X_(struct udev_device *, udev_monitor_receive_device,                   \
+        struct udev_monitor *udev_monitor                                   \
+    )                                                                       \
+    X_(const char *, udev_device_get_devnode,                               \
+        struct udev_device *udev_device                                     \
+    )                                                                       \
+    X_(const char *, udev_device_get_action,                                \
+        struct udev_device *udev_device                                     \
+    )                                                                       \
+    /* All udev_*_unref() functions always return `NULL` */                 \
+    X_(struct udev_device *, udev_device_unref,                             \
+        struct udev_device *udev_device                                     \
+    )                                                                       \
+    X_(struct udev_monitor *, udev_monitor_unref,                           \
+        struct udev_monitor *udev_monitor                                   \
+    )                                                                       \
+    X_(struct udev *, udev_unref, struct udev *udev)                        \
+
+
+#define X_(ret_type, name, ...) \
+    union { ret_type (*name)(__VA_ARGS__); void *_voidp_##name; };
+struct libudev_functions {
+    LIBUDEV_FUNCTIONS_LIST
+};
+#undef X_
+
+#define X_(ret_type, name, ...) #name,
+static const char *const libudev_symnames[] = {
+    LIBUDEV_FUNCTIONS_LIST
+    NULL
+};
+#undef X_
+
+static struct p_lib *g_libudev_handle = NULL;
+static struct libudev_functions udev = { 0 };
+static pthread_mutex_t g_libudev_mutex = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic u32 g_n_active_handles = 0;
+
+static i32 load_libudev(void);
+static void unload_libudev(void);
+
 i32 evdev_monitor_init(struct evdev_monitor *o)
 {
     u_check_params(o != NULL);
+    o->destroyed__ = false;
 
-    o->udev = udev_new();
+    u32 tmp_n_active_handles = atomic_load(&g_n_active_handles);
+    if (tmp_n_active_handles == 0 && load_libudev() != 0)
+        goto_error("Couldn't load libudev");
+
+    tmp_n_active_handles++;
+    atomic_store(&g_n_active_handles, tmp_n_active_handles);
+
+    o->udev = udev.udev_new();
     if (o->udev == NULL)
         goto_error("Failed to create the udev context");
 
-    o->mon = udev_monitor_new_from_netlink(o->udev, "udev");
+    o->mon = udev.udev_monitor_new_from_netlink(o->udev, "udev");
     if (o->mon == NULL)
         goto_error("Failed to create the udev monitor");
 
-    i32 ret = udev_monitor_filter_add_match_subsystem_devtype(o->mon,
+    i32 ret = udev.udev_monitor_filter_add_match_subsystem_devtype(o->mon,
         "input", NULL);
     if (ret != 0)
         goto_error("Failed to set the filter in udev: %s", strerror(ret));
 
-    ret = udev_monitor_enable_receiving(o->mon);
+    ret = udev.udev_monitor_enable_receiving(o->mon);
     if (ret != 0)
         goto_error("Failed to enable udev events: %s", strerror(ret));
 
-    o->fd = udev_monitor_get_fd(o->mon);
+    o->fd = udev.udev_monitor_get_fd(o->mon);
     if (o->fd < 0)
         goto_error("Failed to get the udev fd: %s", strerror(o->fd));
 
@@ -93,10 +158,10 @@ i32 evdev_monitor_read(struct evdev_monitor *mon,
 
     struct udev_device *dev = NULL;
     char *duped_path = NULL;
-    while (dev = udev_monitor_receive_device(mon->mon), dev != NULL) {
-        const char *path = udev_device_get_devnode(dev);
+    while (dev = udev.udev_monitor_receive_device(mon->mon), dev != NULL) {
+        const char *path = udev.udev_device_get_devnode(dev);
         if (path == NULL) { /* A sysfs entry with no device node */
-            udev_device_unref(dev);
+            (void) udev.udev_device_unref(dev);
             dev = NULL;
             continue;
         }
@@ -108,7 +173,7 @@ i32 evdev_monitor_read(struct evdev_monitor *mon,
         duped_path = strdup(path + u_strlen("/dev/input/"));
         s_assert(duped_path != NULL, "Failed to duplicate string");
 
-        const char *action = udev_device_get_action(dev);
+        const char *action = udev.udev_device_get_action(dev);
         if (action == NULL)
             goto_error("Failed to get action performed on udev device");
 
@@ -120,7 +185,7 @@ i32 evdev_monitor_read(struct evdev_monitor *mon,
             else u_nfree(&duped_path);
         }
 
-        udev_device_unref(dev);
+        (void) udev.udev_device_unref(dev);
         dev = NULL;
     }
 
@@ -132,7 +197,7 @@ err:
     if (duped_path != NULL)
         u_nfree(&duped_path);
     if (dev != NULL) {
-        udev_device_unref(dev);
+        (void) udev.udev_device_unref(dev);
         dev = NULL;
     }
     if (created != NULL) {
@@ -153,19 +218,65 @@ err:
 
 void evdev_monitor_destroy(struct evdev_monitor *mon)
 {
-    if (mon == NULL)
+    if (mon == NULL || mon->destroyed__)
         return;
 
     s_log_debug("Destroying udev monitor...");
     /* Both udev_..._unref functions always return NULL */
     if (mon->mon != NULL) {
-        (void) udev_monitor_unref(mon->mon);
+        (void) udev.udev_monitor_unref(mon->mon);
         mon->mon = NULL;
     }
     if (mon->udev != NULL) {
-        (void) udev_unref(mon->udev);
+        (void) udev.udev_unref(mon->udev);
         mon->udev = NULL;
     }
 
     mon->fd = -1;
+
+    u32 tmp_n_active_handles = atomic_load(&g_n_active_handles);
+    tmp_n_active_handles--;
+    atomic_store(&g_n_active_handles, tmp_n_active_handles);
+    if (tmp_n_active_handles == 0)
+        unload_libudev();
+
+    mon->destroyed__ = true;
+}
+
+static i32 load_libudev(void)
+{
+    pthread_mutex_lock(&g_libudev_mutex);
+    if (g_libudev_handle == NULL) {
+        s_assert(atomic_load(&g_n_active_handles) == 0,
+            "%u monitor handles active while libudev isn't loaded",
+            g_n_active_handles);
+
+        g_libudev_handle = p_librtld_load(LIBUDEV_LIBNAME, libudev_symnames);
+        if (g_libudev_handle == NULL)
+            return 1;
+
+#define X_(ret_type, name, ...)                                             \
+        udev._voidp_##name = p_librtld_load_sym(g_libudev_handle, #name);   \
+        if (udev._voidp_##name == NULL) return 1;                           \
+
+        LIBUDEV_FUNCTIONS_LIST
+#undef X_
+    }
+    pthread_mutex_unlock(&g_libudev_mutex);
+    return 0;
+}
+
+static void unload_libudev(void)
+{
+    pthread_mutex_lock(&g_libudev_mutex);
+    if (g_libudev_handle != NULL) {
+        s_assert(atomic_load(&g_n_active_handles) == 0,
+            "%u monitor handles active while libudev is being unloaded",
+            g_n_active_handles);
+
+        p_librtld_close(&g_libudev_handle);
+        memset(&udev, 0, sizeof(struct libudev_functions));
+        s_log_debug("Unloaded libudev");
+    }
+    pthread_mutex_unlock(&g_libudev_mutex);
 }

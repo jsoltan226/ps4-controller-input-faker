@@ -3,7 +3,6 @@
 
 #include <core/int.h>
 #include <core/vector.h>
-#include <libudev.h>
 
 /* The purpose of this class is to monitor /dev/input
  * for creation or deletion of files (event devices).
@@ -15,6 +14,7 @@ struct evdev_monitor {
     struct udev *udev;
     struct udev_monitor *mon;
     i32 fd;
+    bool destroyed__;
 };
 
 /* Initializes a new /dev/input monitor `o`.

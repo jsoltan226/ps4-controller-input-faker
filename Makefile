@@ -25,7 +25,7 @@ LDFLAGS += -municode -mwindows
 endif
 SO_LDFLAGS = -shared
 
-LIBS ?= -lm -ludev
+LIBS ?= -lm
 ifeq ($(TERMUX), 1)
 LIBS += $(PREFIX)/lib/libandroid-shmem.a -llog
 endif
