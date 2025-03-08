@@ -12,7 +12,7 @@ void handle_monitor_event(struct evdev_monitor *mon, struct evdev *devices)
 {
     VECTOR(char *) created = NULL;
     VECTOR(char *) deleted = NULL;
-    if (evdev_monitor_poll(mon, 0, &created, &deleted))
+    if (evdev_monitor_poll_and_read(mon, 0, &created, &deleted))
         return;
 
     for (u32 i = 0; i < vector_size(created); i++) {

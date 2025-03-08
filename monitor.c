@@ -49,7 +49,37 @@ err:
     return 1;
 }
 
-i32 evdev_monitor_poll(struct evdev_monitor *mon, i32 delay_sec,
+i32 evdev_monitor_poll_and_read(struct evdev_monitor *mon, i32 delay_sec,
+    VECTOR(char *) *o_created, VECTOR(char *) *o_deleted)
+{
+    u_check_params(mon != NULL);
+
+
+    struct pollfd poll_fd = {
+        .fd = mon->fd,
+        .events = POLLIN
+    };
+retry_poll:;
+    i32 ret = poll(&poll_fd, 1, delay_sec);
+    if (ret < 0) {
+        if (errno == EINTR) /* Interrupted by signal */
+            goto retry_poll;
+
+        s_log_error("Failed to poll on monitor fd: %s", strerror(errno));
+        if (o_created != NULL) *o_created = NULL;
+        if (o_deleted != NULL) *o_deleted = NULL;
+        return 1;
+    } else if (ret == 0) {
+        /* No events available */
+        if (o_created != NULL) *o_created = vector_new(char *);
+        if (o_deleted != NULL) *o_deleted = vector_new(char *);
+        return 0;
+    } else {
+        return evdev_monitor_read(mon, o_created, o_deleted);
+    }
+}
+
+i32 evdev_monitor_read(struct evdev_monitor *mon,
     VECTOR(char *) *o_created, VECTOR(char *) *o_deleted)
 {
     u_check_params(mon != NULL);
@@ -60,48 +90,37 @@ i32 evdev_monitor_poll(struct evdev_monitor *mon, i32 delay_sec,
     VECTOR(char *) deleted = NULL;
     if (o_deleted != NULL) deleted = vector_new(char *);
 
-    struct pollfd poll_fd = {
-        .fd = mon->fd,
-        .events = POLLIN
-    };
     struct udev_device *dev = NULL;
     char *duped_path = NULL;
-retry_poll:;
-    i32 ret = poll(&poll_fd, 1, delay_sec);
-    if (ret < 0) {
-        if (errno == EINTR) /* Interrupted by signal */
-            goto retry_poll;
-        goto_error("Failed to poll on inotify fd: %s", strerror(errno));
-    } else if (ret == 0) {
-        /* No events available */
-    } else {
-        while (dev = udev_monitor_receive_device(mon->mon), dev != NULL) {
-            const char *path = udev_device_get_devnode(dev);
-            if (path == NULL) /* A sysfs entry with no device node */
-                continue;
-
-            /* Strip off the `/dev/input/` prefix */
-            if (strncmp(path, "/dev/input/", u_strlen("/dev/input/")))
-                goto_error("Invalid evdev path received: %s", path);
-
-            duped_path = strdup(path + u_strlen("/dev/input/"));
-            s_assert(duped_path != NULL, "Failed to duplicate string");
-
-            const char *action = udev_device_get_action(dev);
-            if (action == NULL)
-                goto_error("Failed to get action performed on udev device");
-
-            if (!strcmp(action, "add")) {
-                if (created != NULL) vector_push_back(created, duped_path);
-                else u_nfree(&duped_path);
-            } else if (!strcmp(action, "remove")) {
-                if (deleted != NULL) vector_push_back(deleted, duped_path);
-                else u_nfree(&duped_path);
-            }
-
+    while (dev = udev_monitor_receive_device(mon->mon), dev != NULL) {
+        const char *path = udev_device_get_devnode(dev);
+        if (path == NULL) { /* A sysfs entry with no device node */
             udev_device_unref(dev);
             dev = NULL;
+            continue;
         }
+
+        /* Strip off the `/dev/input/` prefix */
+        if (strncmp(path, "/dev/input/", u_strlen("/dev/input/")))
+            goto_error("Invalid evdev path received: %s", path);
+
+        duped_path = strdup(path + u_strlen("/dev/input/"));
+        s_assert(duped_path != NULL, "Failed to duplicate string");
+
+        const char *action = udev_device_get_action(dev);
+        if (action == NULL)
+            goto_error("Failed to get action performed on udev device");
+
+        if (!strcmp(action, "add")) {
+            if (created != NULL) vector_push_back(created, duped_path);
+            else u_nfree(&duped_path);
+        } else if (!strcmp(action, "remove")) {
+            if (deleted != NULL) vector_push_back(deleted, duped_path);
+            else u_nfree(&duped_path);
+        }
+
+        udev_device_unref(dev);
+        dev = NULL;
     }
 
     if (o_created != NULL) *o_created = created;

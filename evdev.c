@@ -147,7 +147,7 @@ i32 evdev_load(const char *rel_path, struct evdev *out, enum evdev_type type)
         s_log_warn("Failed to get name for event device %s: %s",
             out->path, strerror(errno));
     }
-    s_log_debug("Trying \"%s\" (%s)...", out->name, out->path);
+    //s_log_debug("Trying \"%s\" (%s)...", out->name, out->path);
 
     /* Silently fail if device is of invalid type */
     out->type = EVDEV_UNKNOWN;
@@ -163,7 +163,7 @@ i32 evdev_load(const char *rel_path, struct evdev *out, enum evdev_type type)
     } else {
         if (ev_cap_check(out->fd, out->path, type))
             goto err;
-    }
+        out->type = type; }
 
     return 0;
 
@@ -251,8 +251,7 @@ static i32 ev_bit_check(const u64 bits[], u32 n_bits, const i32 *checks)
         if (arr_index >= n_bits) continue;
 
         const u64 mask = 1ULL << (u64)(checks[i] % 64);
-        (void) mask;
-        if (!(bits[checks[i] / 64] & (1ULL << (u64)(checks[i] % 64)))) {
+        if (!(bits[checks[i] / 64] & mask)) {
             //s_log_error("Bit 0x%x not present", checks[i]);
             ret++;
         }

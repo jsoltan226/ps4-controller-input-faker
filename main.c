@@ -1,50 +1,132 @@
-#include <linux/input-event-codes.h>
+#include <linux/input.h>
+#include <sys/poll.h>
 #define _GNU_SOURCE
-#include "jsdev.h"
 #include "evdev.h"
+#include "kbddev.h"
 #include "monitor.h"
-#include "keyboard.h"
-#include "key-codes.h"
+#include <core/int.h>
 #include <core/log.h>
 #include <core/util.h>
 #include <core/vector.h>
-#include <keyboard-evdev.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdatomic.h>
-#include <sys/cdefs.h>
-#include <sys/poll.h>
-#include <unistd.h>
 #include <signal.h>
-#include <linux/input.h>
+#include <poll.h>
+#include <unistd.h>
+#include <linux/input-event-codes.h>
 
 #define MODULE_NAME "main"
 
-#define CONTROLLER_DEV "event31"
-#define MOTION_SENSORS_DEV "event256"
-#define TOUCHPAD_DEV "event257"
 
-#define KEYBOARD_DEV "event3"
+#define FAKE_KEYPRESS_EV_CODE KEY_F21
 
-#define JOYSTICK_DEV "js0"
-
-static void __attribute_maybe_unused__ controller_test(void);
-static void __attribute_maybe_unused__ keyboard_test(void);
-static void __attribute_maybe_unused__ hotplug_test(void);
-static void __attribute_maybe_unused__ joystick_test(void);
-
+static i32 init_signal_handler(void);
 static void signal_handler(i32 sig_num);
+static atomic_flag running = ATOMIC_FLAG_INIT;
 
-static void read_dev(i32 fd);
-static void handle_ev(struct input_event *ev, struct evdev *kb_evdev);
+static i32 handle_monitor_event(struct evdev_monitor *mon,
+    VECTOR(struct evdev) *devices, VECTOR(struct pollfd) *poll_fds);
 
-atomic_flag running = ATOMIC_FLAG_INIT;
+static i32 handle_device_event(struct evdev *dev, i32 kbddev_fd);
+static i32 write_fake_event(i32 fd);
+
+#define pollfd_disconnected(pollfd) \
+    (pollfd.revents & POLLERR       \
+    || pollfd.revents & POLLHUP     \
+    || pollfd.revents & POLLNVAL)
+
+static void handle_fd_disconnect(VECTOR(struct evdev) *devices,
+    VECTOR(struct pollfd) *poll_fds, u32 device_index);
 
 int main(int argc, char **argv)
 {
+    i32 ret = EXIT_FAILURE;
     s_configure_log(LOG_DEBUG, stdout, stderr);
 
+    if (init_signal_handler())
+        goto_error("Failed to initialize the signal handler. Stop.");
+
+    kbddev_t fake_keyboard = { 0 };
+    if (kbddev_init(&fake_keyboard))
+        goto_error("Couldn't initialize the fake keyboard device. Stop.");
+
+    struct evdev_monitor mon = { 0 };
+    if (evdev_monitor_init(&mon))
+        goto_error("Failed to initialize the evdev monitor. Stop.");
+
+    VECTOR(struct evdev) devices =
+        evdev_find_and_load_devices(EVDEV_PS4_CONTROLLER);
+    if (devices == NULL)
+        goto_error("Error while loading active event devices. Stop.");
+
+    VECTOR(struct pollfd) global_poll_fds = vector_new(struct pollfd);
+    vector_reserve(global_poll_fds, 1 + vector_size(devices));
+    /* Init the monitor pollfd */
+    vector_push_back(global_poll_fds, (struct pollfd) {
+        .fd = mon.fd,
+        .events = POLLIN,
+    });
+
+    /* Init the device pollfds */
+    for (u32 i = 0; i < vector_size(devices); i++) {
+        global_poll_fds[i].fd = devices[i].fd;
+        global_poll_fds[i].events = POLLIN;
+    }
+
+    (void) atomic_flag_test_and_set(&running);
+    while (atomic_flag_test_and_set(&running)) {
+        /* Block until either a monitor or a device event occurs */
+        i32 ret = poll(global_poll_fds, vector_size(global_poll_fds), -1);
+        if (ret == -1) {
+            if (errno == EINTR) { /* Interrupted by signal, try again */
+                continue;
+            } else {
+                goto_error("Failed to poll on monitor and devices: %s",
+                    strerror(errno));
+            }
+        }
+
+        i32 n_handled = 0;
+        if (n_handled >= ret) continue;
+
+        /* Check the monitor fd */
+        if (global_poll_fds[0].revents & POLLNVAL) {
+            /* Something like this should never happen */
+            s_log_fatal(MODULE_NAME, __func__,
+                "The monitor device file descriptor became invalid");
+        } else if (global_poll_fds[0].revents & POLLIN) {
+            if (handle_monitor_event(&mon, &devices, &global_poll_fds))
+                goto_error("Failed to handle monitor event. Stop.");
+
+            n_handled++;
+        }
+        if (n_handled >= ret) continue;
+
+        /* Check the device fds */
+        for (u32 i = 1; i < vector_size(global_poll_fds); i++) {
+            if (pollfd_disconnected(global_poll_fds[i]))
+                handle_fd_disconnect(&devices, &global_poll_fds, i);
+            else if (global_poll_fds[i].revents & POLLIN)
+                handle_device_event(&devices[i - 1], fake_keyboard.fd);
+            n_handled++;
+            if (n_handled >= ret)
+                break;
+        }
+    }
+
+    ret = EXIT_SUCCESS;
+err:
+    atomic_flag_clear(&running);
+    kbddev_destroy(&fake_keyboard);
+    evdev_list_destroy(&devices);
+    evdev_monitor_destroy(&mon);
+    return ret;
+}
+
+static i32 init_signal_handler(void)
+{
     struct sigaction sa;
     sa.sa_handler = signal_handler;
     sa.sa_flags = 0;
@@ -56,96 +138,9 @@ int main(int argc, char **argv)
     if (sigaction(SIGINT, &sa, NULL))
         goto_error("Failed to register SIGINT handler: %s", strerror(errno));
 
-    //controller_test();
-    //keyboard_test();
-    hotplug_test();
-    //joystick_test();
-    return EXIT_SUCCESS;
-
+    return 0;
 err:
-    return EXIT_FAILURE;
-}
-
-static void __attribute_maybe_unused__ controller_test(void)
-{
-    struct evdev controller = { 0 };
-    if (evdev_load(CONTROLLER_DEV, &controller, EVDEV_PS4_CONTROLLER))
-        goto_error("Failed to load the main controller device.");
-    s_log_debug("Opened controller as fd %i", controller.fd);
-
-    struct evdev motion_sensors = { 0 };
-    if (evdev_load(MOTION_SENSORS_DEV, &motion_sensors, EVDEV_PS4_CONTROLLER_MOTION_SENSOR))
-        goto_error("Failed to load the motion sensors device.");
-    s_log_debug("Opened sensors as fd %i", motion_sensors.fd);
-
-    struct evdev touchpad = { 0 };
-    if (evdev_load(TOUCHPAD_DEV, &touchpad, EVDEV_PS4_CONTROLLER_TOUCHPAD))
-        goto_error("Failed to load the touchpad device.");
-    s_log_debug("Opened touchpad as fd %i", touchpad.fd);
-
-    struct pollfd poll_fds[] = {
-        (struct pollfd){ .fd = controller.fd, .events = POLLIN },
-        (struct pollfd){ .fd = motion_sensors.fd, .events = POLLIN },
-        (struct pollfd){ .fd = touchpad.fd, .events = POLLIN },
-    };
-
-    (void) atomic_flag_test_and_set(&running);
-    while (atomic_flag_test_and_set(&running)) {
-        i32 ret = poll(poll_fds, u_arr_size(poll_fds), 1);
-        if (ret == -1) {
-            if (errno == EINTR) /* Interrupted by signal */
-                continue;
-            else if (errno == EAGAIN)
-                break;
-            s_log_error("Failed to poll on controller: %s", strerror(errno));
-            atomic_flag_clear(&running);
-            break;
-        } else if (ret > 0) {
-            for (u32 i = 0; i < u_arr_size(poll_fds); i++) {
-                if (poll_fds[i].revents & POLLERR ||
-                    poll_fds[i].revents & POLLNVAL ||
-                    poll_fds[i].revents & POLLHUP)
-                {
-                    s_log_debug("fd %i disconnected, exiting...",
-                        poll_fds[i].fd);
-                    atomic_flag_clear(&running);
-                    break;
-                } else if (poll_fds[i].revents & POLLIN) {
-                    read_dev(poll_fds[i].fd);
-                }
-            }
-        }
-    }
-
-err:
-    if (touchpad.fd != -1) close(touchpad.fd);
-    if (motion_sensors.fd != -1) close(motion_sensors.fd);
-    if (controller.fd != -1) close(controller.fd);
-}
-
-static void __attribute_maybe_unused__ keyboard_test(void)
-{
-    struct keyboard_evdev kb = { 0 };
-    kb.kbdevs = vector_new(struct evdev);
-    kb.poll_fds = vector_new(struct pollfd);
-    struct evdev tmp = { 0 };
-    if (evdev_load(KEYBOARD_DEV, &tmp, EVDEV_KEYBOARD))
-        goto_error("Failed to load the keyboard device");
-    vector_push_back(kb.kbdevs, tmp);
-    vector_push_back(kb.poll_fds, (struct pollfd) {
-        .events = POLLIN,
-        .fd = tmp.fd
-    });
-
-    pressable_obj_t keys[P_KEYBOARD_N_KEYS] = { 0 };
-
-    while (!keys[KB_KEYCODE_Q].up)
-        evdev_keyboard_update_all_keys(&kb, keys);
-
-    s_log_info("Pressed 'Q', exiting...");
-
-err:
-    evdev_keyboard_destroy(&kb);
+    return 1;
 }
 
 static void signal_handler(i32 sig_num)
@@ -154,205 +149,142 @@ static void signal_handler(i32 sig_num)
         atomic_flag_clear(&running);
 }
 
-static void read_dev(i32 fd)
+static i32 handle_monitor_event(struct evdev_monitor *mon,
+    VECTOR(struct evdev) *devices, VECTOR(struct pollfd) *poll_fds)
 {
-    //s_log_debug("Received events on fd %i", fd);
-    u8 buf[4096];
-    while (read(fd, buf, 4096) > 0)
-        ;
-}
-
-static void __attribute_maybe_unused__ hotplug_test(void)
-{
-    VECTOR(struct evdev) devices =
-        evdev_find_and_load_devices(EVDEV_TYPE_AUTO);
-    if (devices == NULL)
-        goto_error("Failed to load event devices");
-    for (u32 i = 0; i < vector_size(devices); i++) {
-        s_log_info("New device: \"%s\" (%s), type %s",
-            devices[i].name[0] ? devices[i].name : "n/a",
-            devices[i].path, evdev_type_strings[devices[i].type]
-        );
-    }
-    VECTOR(struct pollfd) poll_fds = vector_new(struct pollfd);
-    for (u32 i = 0; i < vector_size(devices); i++) {
-        vector_push_back(poll_fds, (struct pollfd) {
-            .fd = devices[i].fd,
-            .events = POLLIN
-        });
-    }
-
     VECTOR(char *) created = NULL;
     VECTOR(char *) deleted = NULL;
+    if (evdev_monitor_read(mon, &created, &deleted))
+        goto_error("Evdev monitor read failed");
 
-    struct evdev_monitor mon;
-    if (evdev_monitor_init(&mon))
-        goto_error("Failed to initialize the monitor.");
+    for (u32 i = 0; i < vector_size(created); i++) {
+        struct evdev new_dev = { 0 };
+        if (strncmp(created[i], "event", u_strlen("event"))) {
+            /* Not an evdev */
+        } else if (evdev_load(created[i], &new_dev, EVDEV_PS4_CONTROLLER)) {
+            //s_log_debug("Failed to load event device %s", created[i]);
+        } else {
+            s_log_info("New device: \"%s\" (%s), type %s",
+                new_dev.name[0] ? new_dev.name : "n/a",
+                new_dev.path, evdev_type_strings[new_dev.type]
+            );
+            vector_push_back((*devices), new_dev);
+            vector_push_back((*poll_fds), (struct pollfd) {
+                .fd = new_dev.fd,
+                .events = POLLIN
+            });
+        }
+        u_nfree(&created[i]);
+    }
+    vector_destroy(&created);
 
-    (void) atomic_flag_test_and_set(&running);
-    while (atomic_flag_test_and_set(&running)) {
-        if (evdev_monitor_poll(&mon, 1, &created, &deleted))
-            goto_error("Monitor poll failed");
-
-        for (u32 i = 0; i < vector_size(created); i++) {
-            struct evdev new_dev = { 0 };
-            if (strncmp(created[i], "event", u_strlen("event"))) {
-                /* Not an evdev */
-            } else if (evdev_load(created[i], &new_dev, EVDEV_TYPE_AUTO)) {
-                //s_log_debug("Failed to load event device %s", created[i]);
-            } else {
-                s_log_info("New device: \"%s\" (%s), type %s",
-                    new_dev.name[0] ? new_dev.name : "n/a",
-                    new_dev.path, evdev_type_strings[new_dev.type]
-                );
-                vector_push_back(devices, new_dev);
-                vector_push_back(poll_fds, (struct pollfd) {
-                    .fd = new_dev.fd,
-                    .events = POLLIN
-                });
+    for (u32 i = 0; i < vector_size(deleted); i++) {
+        for (u32 j = 0; j < vector_size(*devices); j++) {
+            s_assert(!strncmp((*devices)[j].path,
+                "/dev/input/", u_strlen("/dev/input/")),
+                "Invalid event device path \"%s\"", (*devices)[j].path);
+            if (!strcmp(deleted[i],
+                    (*devices)[j].path + u_strlen("/dev/input/"))
+            ) {
+                s_log_info("Removed device: %s", deleted[i]);
+                evdev_destroy(&((*devices)[j]));
+                vector_erase((*devices), j);
+                /* Skip the first element (the monitor fd) */
+                vector_erase((*poll_fds), j + 1);
+                break;
             }
+        }
+        u_nfree(&deleted[i]);
+    }
+    vector_destroy(&deleted);
+
+    return 0;
+
+err:
+    if (created != NULL) {
+        for (u32 i = 0; i < vector_size(created); i++)
             u_nfree(&created[i]);
-        }
         vector_destroy(&created);
+    }
+    if (deleted != NULL) {
+        for (u32 i = 0; i < vector_size(deleted); i++)
+            u_nfree(&created[i]);
+        vector_destroy(&created);
+    }
 
-        for (u32 i = 0; i < vector_size(deleted); i++) {
-            for (u32 j = 0; j < vector_size(devices); j++) {
-                s_assert(!strncmp(devices[j].path,
-                    "/dev/input/", u_strlen("/dev/input/")),
-                    "Invalid event device path \"%s\"", devices[j].path);
-                if (!strcmp(deleted[i],
-                        devices[j].path + u_strlen("/dev/input/"))
-                ) {
-                    s_log_info("Removed device: %s", deleted[i]);
-                    evdev_destroy(&devices[j]);
-                    vector_erase(devices, j);
-                    vector_erase(poll_fds, j);
-                    break;
-                }
-            }
-            u_nfree(&deleted[i]);
-        }
-        vector_destroy(&deleted);
+    return 1;
+}
 
-        i32 ret = poll(poll_fds, vector_size(poll_fds), 0);
-        if (ret < 0) {
-            if (errno == EINTR) /* Interrupted by signal */
+static i32 handle_device_event(struct evdev *dev, i32 kbddev_fd)
+{
+    if (dev->type != EVDEV_PS4_CONTROLLER)
+        return 0;
+
+    struct input_event ev;
+    i32 n_bytes_read = 0;
+
+    do {
+        n_bytes_read = read(dev->fd, &ev, sizeof(ev));
+        if (n_bytes_read == -1 && errno == EINTR) {
+            continue; /* Interrupted by signal, try again */
+        } else if (n_bytes_read == -1 && errno == EAGAIN) {
+            break; /* Non-blocking read would block - no events left */
+        } else if (n_bytes_read == -1) {
+            s_log_error("Failed to read from fd %i: %s",
+                dev->fd, strerror(errno));
+            return 1;
+        } else if (n_bytes_read == 0) {
+            continue; /* No more events left to read */
+        } else if (n_bytes_read > 0 && n_bytes_read != sizeof(ev)) {
+            s_log_fatal(MODULE_NAME, __func__,
+                "Read %i bytes from event device, expected %i. "
+                "The linux input driver is probably broken...",
+                n_bytes_read, sizeof(struct input_event)
+            );
+        } else {
+            const bool is_key_press = (ev.type == EV_KEY ||
+                (ev.type == EV_ABS &&
+                    (ev.code == ABS_HAT0X || ev.code == ABS_HAT0Y)
+                )
+            );
+            if (!is_key_press)
                 continue;
-            goto_error("Failed to poll on device fds: %s", strerror(errno));
-        } else if (ret == 0)
-            continue; /* No events to be read */
 
-        for (u32 i = 0; i < vector_size(poll_fds); i++) {
-            if (poll_fds[i].revents & POLLERR ||
-                poll_fds[i].revents & POLLHUP)
-            {
-                /* Device disconnected */
-            } else if (poll_fds[i].revents & POLLIN) {
-                if (devices[i].type != EVDEV_PS4_CONTROLLER &&
-                    devices[i].type != EVDEV_PS4_CONTROLLER_TOUCHPAD)
-                    continue;
-
-                struct input_event ev;
-                i32 n_bytes_read = 0;
-                do {
-                    n_bytes_read = read(poll_fds[i].fd, &ev, sizeof(ev));
-                    if (n_bytes_read == -1 &&
-                        (errno == EINTR || errno == EAGAIN || errno == ENODEV))
-                    {
-                        continue;
-                    } else if (n_bytes_read == -1) {
-                        goto_error("Failed to read from fd %i: %s",
-                            poll_fds[i].fd, strerror(errno));
-                    } else if (n_bytes_read == 0) {
-                        continue; /* No more events left to read */
-                    } else if (n_bytes_read > 0 && n_bytes_read != sizeof(ev)) {
-                        s_log_fatal(MODULE_NAME, __func__,
-                            "Read %i bytes from event device, expected %i. "
-                            "The linux input driver is probably broken...",
-                            n_bytes_read, sizeof(struct input_event)
-                        );
-                    } else {
-                        struct evdev *kb_evdev = NULL;
-                        for (u32 i = 0; i < vector_size(devices); i++) {
-                            if (devices[i].type == EVDEV_KEYBOARD) {
-                                kb_evdev = &devices[i];
-                                break;
-                            }
-                        }
-                        if (kb_evdev == NULL)
-                            goto_error("No keyboards attached!");
-
-                        handle_ev(&ev, kb_evdev);
-                    }
-                } while (n_bytes_read > 0);
-            }
+            if (write_fake_event(kbddev_fd))
+                return 1;
         }
-    }
+    } while (n_bytes_read > 0);
 
-err:
-    for (u32 i = 0; i < vector_size(devices); i++)
-        evdev_destroy(&devices[i]);
-    vector_destroy(&poll_fds);
-    vector_destroy(&devices);
-    evdev_monitor_destroy(&mon);
+    return 0;
 }
 
-static void __attribute_maybe_unused__ joystick_test(void)
+static i32 write_fake_event(i32 fd)
 {
-    struct joystick_dev jsdev = { 0 };
-    if (joystick_dev_load(&jsdev, JOYSTICK_DEV, true))
-        goto_error("Failed to load joystick device");
-
-    struct pollfd poll_fd = { .fd = jsdev.fd, .events = POLLIN };
-    (void) atomic_flag_test_and_set(&running);
-    while (atomic_flag_test_and_set(&running)) {
-        i32 ret = poll(&poll_fd, 1, 1);
-        if (ret == -1 && errno == EINTR)
-            continue; /* Interrupted by signal */
-        else if (ret == -1)
-            goto_error("Failed to poll on joystick device \"%s\" (%s): %s",
-                jsdev.name, jsdev.path, strerror(errno));
-        else if (ret == 0)
-            continue; /* No events ready to be read */
-        else if (poll_fd.events & POLLIN)
-            joystick_read_event(&jsdev);
-    }
-
-err:
-    joystick_dev_destroy(&jsdev);
-}
-
-static void handle_ev(struct input_event *ev, struct evdev *kb_evdev)
-{
-    if (!((ev->type == EV_KEY) ||
-        (ev->type == EV_ABS &&
-         (ev->code == ABS_HAT0X || ev->code == ABS_HAT0Y))
-    ))
-        return;
-
     struct timeval time;
     gettimeofday(&time, NULL);
     struct input_event press_ev = {
         .type = EV_KEY,
-        .code = KEY_F21,
+        .code = FAKE_KEYPRESS_EV_CODE,
         .value = 1,
         .time = time,
     };
-    if (write(kb_evdev->fd, &press_ev, sizeof(struct input_event)) < 0) {
-        s_log_error("Failed to write to the evdev \"%s\" (%s): %s",
-            kb_evdev->name, kb_evdev->path, strerror(errno));
+    if (write(fd, &press_ev, sizeof(struct input_event)) < 0) {
+        s_log_error("Failed to write fake event to fd %i: %s",
+            fd, strerror(errno));
+        return 1;
     }
 
     gettimeofday(&time, NULL);
     struct input_event release_ev = {
         .type = EV_KEY,
-        .code = KEY_F21,
+        .code = FAKE_KEYPRESS_EV_CODE,
         .value = 0,
         .time = time,
     };
-    if (write(kb_evdev->fd, &release_ev, sizeof(struct input_event)) < 0) {
-        s_log_error("Failed to write to the evdev \"%s\" (%s): %s",
-            kb_evdev->name, kb_evdev->path, strerror(errno));
+    if (write(fd, &release_ev, sizeof(struct input_event)) < 0) {
+        s_log_error("Failed to write fake event to fd %i: %s",
+            fd, strerror(errno));
+        return 1;
     }
 
     gettimeofday(&time, NULL);
@@ -362,8 +294,40 @@ static void handle_ev(struct input_event *ev, struct evdev *kb_evdev)
         .value = 0,
         .time = time,
     };
-    if (write(kb_evdev->fd, &syn_ev, sizeof(struct input_event)) < 0) {
-        s_log_error("Failed to write to the evdev \"%s\" (%s): %s",
-            kb_evdev->name, kb_evdev->path, strerror(errno));
+    if (write(fd, &syn_ev, sizeof(struct input_event)) < 0) {
+        s_log_error("Failed to write fake event to fd %i: %s",
+            fd, strerror(errno));
+        return 1;
     }
+
+    return 0;
+}
+
+static void handle_fd_disconnect(VECTOR(struct evdev) *devices,
+    VECTOR(struct pollfd) *poll_fds, u32 device_index)
+{
+    /* "di" - device index, "pi" - pollfd index */
+    const u32 di = device_index;
+    const u32 pi = device_index + 1; /* skip the monitor pollfd */
+
+    /* Some kind of error occured on the fd */
+    if ((*poll_fds)[pi].revents & POLLERR) {
+        s_log_error("Error on device %s (fd %i), disconnecting...");
+    }
+    /* The device just disconnected, nothing super unusual */
+    if ((*poll_fds)[pi].revents & POLLHUP) {
+        s_log_info("Device %s disconnected", (*devices)[di].path);
+    }
+    /* The fd is invalid (most likely a race condition/use-after-free) */
+    if ((*poll_fds)[pi].revents & POLLNVAL) {
+        s_log_fatal(MODULE_NAME, __func__,
+            "File descriptor %i (device %s - \"%s\") became invalid",
+            (*poll_fds)[pi].fd, (*devices)[di].path, (*devices)[di].name);
+    }
+
+
+    evdev_destroy(&((*devices)[di]));
+    vector_erase((*devices), di);
+    /* Skip the first element (the monitor fd) */
+    vector_erase((*poll_fds), pi);
 }
