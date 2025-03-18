@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
-#define KBDDEV__
+#define KBDDEV_INTERNAL_GUARD__
 #include "kbddev.h"
+#undef KBDDEV_INTERNAL_GUARD__
 #include <core/int.h>
 #include <core/log.h>
 #include <core/util.h>

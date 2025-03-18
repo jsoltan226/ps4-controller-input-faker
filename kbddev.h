@@ -1,6 +1,10 @@
 #ifndef KBDDEV_H_
 #define KBDDEV_H_
 
+#ifdef __cplusplus
+extern "C" {
+#endif /* __cplusplus */
+
 #include <core/int.h>
 #include <assert.h>
 #include <stdbool.h>
@@ -22,7 +26,7 @@ i32 kbddev_init(kbddev_t *kbddev_p);
 /* Destroys the fake keyboard device pointed to by `kbddev_p`. */
 void kbddev_destroy(kbddev_t *kbddev_p);
 
-#ifdef KBDDEV__
+#ifdef KBDDEV_INTERNAL_GUARD__
 #include <linux/uinput.h>
 #include <linux/input-event-codes.h>
 
@@ -41,6 +45,11 @@ static const struct uinput_setup ds4_setup = {
     },
     .ff_effects_max = 0,
 };
-#endif /* KBDDEV__ */
+
+#endif /* KBDDEV_INTERNAL_GUARD__ */
+
+#ifdef __cplusplus
+}
+#endif /* __cplusplus */
 
 #endif /* KBDDEV_H_ */

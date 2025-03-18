@@ -10,7 +10,8 @@
 
 #define MODULE_NAME "joystick-ev"
 
-void handle_monitor_event(struct evdev_monitor *mon, struct evdev *devices)
+void handle_monitor_event(struct evdev_monitor *mon,
+    VECTOR(struct evdev) devices)
 {
     VECTOR(char *) created = NULL;
     VECTOR(char *) deleted = NULL;

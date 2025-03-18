@@ -82,7 +82,7 @@ int main(int argc, char **argv)
 
     (void) atomic_flag_test_and_set(&running);
     while (atomic_flag_test_and_set(&running)) {
-        /* Block until either a monitor or a device event occurs */
+        /* Block until either a monitor or device event occurs */
         i32 ret = poll(global_poll_fds, vector_size(global_poll_fds), -1);
         if (ret == -1) {
             if (errno == EINTR) { /* Interrupted by signal, try again */
@@ -264,8 +264,9 @@ static i32 handle_device_event(struct evdev *dev, i32 kbddev_fd)
 
 static i32 write_fake_event(i32 fd)
 {
+    /* Key down */
     struct timeval time;
-    gettimeofday(&time, NULL);
+    (void) gettimeofday(&time, NULL);
     struct input_event press_ev = {
         .type = EV_KEY,
         .code = FAKE_KEYPRESS_EV_CODE,
@@ -278,7 +279,8 @@ static i32 write_fake_event(i32 fd)
         return 1;
     }
 
-    gettimeofday(&time, NULL);
+    /* Key up */
+    (void) gettimeofday(&time, NULL);
     struct input_event release_ev = {
         .type = EV_KEY,
         .code = FAKE_KEYPRESS_EV_CODE,
@@ -291,7 +293,8 @@ static i32 write_fake_event(i32 fd)
         return 1;
     }
 
-    gettimeofday(&time, NULL);
+    /* SYN report */
+    (void) gettimeofday(&time, NULL);
     struct input_event syn_ev = {
         .type = EV_SYN,
         .code = SYN_REPORT,
