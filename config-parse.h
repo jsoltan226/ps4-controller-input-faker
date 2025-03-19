@@ -19,7 +19,7 @@ enum config_type {
 };
 
 struct config_option {
-    char key[256];
+    char key[CONFIG_KEY_MAX_LEN];
     enum config_type type;
     union config_value {
         i64 i;

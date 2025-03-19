@@ -3,7 +3,7 @@ This is a little linux daemon that listens for active PS4 controller (Dualshock 
 
 ## Why?
 Every time I was playing a game that required a controller (i.e. Bloodborne), my screen would lock after a couple of minutes due to inactivity.
-The reason for this is that `libinput` doesn't provide an interface for joysticks at all, which means that Wayland compostor that utilize it for input handling (pretty much all of them) won't notice that anything is happening unless I move the mouse or press a key on the keyboard etc.
+The reason for this is that `libinput` doesn't provide an interface for joysticks at all, which means that Wayland compositors that utilize it for input handling (pretty much all of them) won't notice that anything is happening unless I move the mouse or press a key on the keyboard etc.
 A workaround for this would be to disable the lock timeout altogether while playing and then re-enable it once I'm done, but that was getting really annoying, so I decided to make a more covenient solution - whenever I press a button on the controller, the system thinks I also pressed a key on the keyboard.
 
 ## Dependencies
@@ -16,7 +16,7 @@ But if you really want to, you can just clone the repo and, with `make` and a C 
 This will build the debug version. 
 The output executable will be `bin/main`. 
 If you want a release build (Optimizations + LTO + strip + no debug logging) run `make release`. 
-To install the executable and the systemd service, run `make install` 
+To install the executable and the systemd service, run `make install`
 and then to enable the service `systemctl enable ps4-controller-input-faker.service` 
 Note that the two above commands will probably need root privileges. 
-To clean up the build files, run `make clean`.
+To clean up the build files, run `make clean`. 

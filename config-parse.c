@@ -33,6 +33,11 @@ struct config_parse_ctx {
     struct config_parse_global_ctx *global_ctx_p_;
 };
 
+struct config_option_intermediate {
+    char key[CONFIG_KEY_MAX_LEN];
+    char value[CONFIG_VALUE_MAX_LEN];
+};
+
 enum config_parse_global_ctx_flag {
     FLAG_LINE_HAS_SECTION_TAG = 1,
     FLAG_LINE_HAS_KEY_VALUE,
@@ -42,12 +47,12 @@ enum config_parse_global_ctx_flag {
     CONFIG_PARSE_GLOBAL_CTX_FLAG_MAX
 };
 
-static enum config_type find_value_type(const char value[CONFIG_VALUE_MAX_LEN]);
-static i32 assign_option(struct config_option *o,
-    const char key[CONFIG_KEY_MAX_LEN], const char value[CONFIG_VALUE_MAX_LEN]);
-
 static i32 match_options(struct config *cfg_o,
-    const VECTOR(struct config_option) options);
+    const VECTOR(struct config_option_intermediate) intermediate_options);
+static i32 try_assign_option(struct config_option *o,
+    const struct config_option_intermediate *intermediate_option);
+static bool can_value_be_type(const char value_buf[CONFIG_VALUE_MAX_LEN],
+    enum config_type desired_type);
 
 static void handle_in_nothing(struct config_parse_ctx *ctx);
 static void handle_in_key(struct config_parse_ctx *ctx);
@@ -56,7 +61,8 @@ static void handle_in_section(struct config_parse_ctx *ctx);
 
 /* Everything below has the `struct config_parse_global_ctx`
  * definition available (everything above doesn't) */
-static VECTOR(struct config_option) read_options(const char *file_path);
+static VECTOR(struct config_option_intermediate)
+    read_options(const char *file_path);
 
 static inline i32 ctx_get_n_read(const struct config_parse_ctx *ctx);
 static inline u32 ctx_get_char_index(const struct config_parse_ctx *ctx);
@@ -87,12 +93,22 @@ i32 config_parse(const char *config_file_path, struct config *o)
         return 1;
     }
 
-    VECTOR(struct config_option) options = read_options(config_file_path);
-    if (options == NULL)
+    VECTOR(struct config_option_intermediate) option_intermediates =
+        read_options(config_file_path);
+    if (option_intermediates == NULL)
         goto_error("Failed to read config options from file \"%s\"",
             config_file_path);
 
-    i32 n_matched_options = match_options(o, options);
+#ifndef CGD_BUILDTYPE_RELEASE
+    s_log_debug("++++ read_options OK ++++");
+    for (u32 i = 0; i < vector_size(option_intermediates); i++) {
+        s_log_debug("key/value %u: \"%s\" = \"%s\"", i,
+            option_intermediates[i].key, option_intermediates[i].value);
+    }
+    s_log_debug("+++++++++++++++++++++++++");
+#endif /* CGD_BUILDTYPE_RELEASE */
+
+    i32 n_matched_options = match_options(o, option_intermediates);
     if (n_matched_options < 0)
         goto_error("Failed to match options from config file \"%s\"",
             config_file_path);
@@ -105,12 +121,12 @@ i32 config_parse(const char *config_file_path, struct config *o)
             n_matched_options, config_file_path);
 #endif /* CGD_BUILDTYPE_RELEASE */
 
-    vector_destroy(&options);
+    vector_destroy(&option_intermediates);
     return 0;
 
 err:
-    if (options != NULL)
-        vector_destroy(&options);
+    if (option_intermediates != NULL)
+        vector_destroy(&option_intermediates);
     return 1;
 }
 
@@ -197,9 +213,7 @@ static void handle_in_key(struct config_parse_ctx *ctx)
         return;
     }
 
-    /* "Advance" by 1 character */
     ctx_write_key(ctx, ctx_get_key_strlen(ctx), ctx->curr_char);
-    ctx_write_key(ctx, ctx_get_key_strlen(ctx), '\0');
 }
 
 static void handle_in_value(struct config_parse_ctx *ctx)
@@ -225,9 +239,7 @@ static void handle_in_value(struct config_parse_ctx *ctx)
         return;
     }
 
-    /* "Advance" 1 character */
     ctx_write_value(ctx, ctx_get_value_strlen(ctx), ctx->curr_char);
-    ctx_write_value(ctx, ctx_get_value_strlen(ctx) + 1, '\0');
 }
 
 static void handle_in_section(struct config_parse_ctx *ctx)
@@ -248,75 +260,120 @@ static void handle_in_section(struct config_parse_ctx *ctx)
 #undef is_whitespace
 #undef syntax_error
 
-static enum config_type find_value_type(const char value[CONFIG_VALUE_MAX_LEN])
-{
-    return CONFIG_TYPE_STRING;
-}
-
-static i32 assign_option(struct config_option *o,
-    const char key[CONFIG_KEY_MAX_LEN], const char value[CONFIG_VALUE_MAX_LEN])
-{
-
-    strncpy(o->key, key, CONFIG_KEY_MAX_LEN);
-
-    o->type = find_value_type(value);
-    switch (o->type) {
-        default: case CONFIG_TYPE_UNSET:
-            goto_error("Value (\"%s\") is of unknown type", value);
-        case CONFIG_TYPE_INT:
-            o->value.i = strtoll(value, NULL, 0);
-            break;
-        case CONFIG_TYPE_FLOAT:
-            o->value.f = strtod(value, NULL);
-            break;
-        case CONFIG_TYPE_BOOL:
-            if (!strncasecmp("true", value, CONFIG_VALUE_MAX_LEN)
-                || !strncmp("1", value, CONFIG_VALUE_MAX_LEN))
-            {
-                o->value.b = true;
-            } else if (!strncasecmp("false", value,
-                        CONFIG_VALUE_MAX_LEN)
-                || !strncmp("0", value, CONFIG_VALUE_MAX_LEN))
-            {
-                o->value.b = false;
-            } else {
-                goto_error(
-                    "Invalid value \"%s\" for boolean key \"%s\"",
-                    value, key
-                );
-            }
-            break;
-        case CONFIG_TYPE_STRING:
-            strncpy(o->value.str, value, CONFIG_VALUE_MAX_LEN);
-            break;
-    }
-    return 0;
-
-err:
-    o->type = CONFIG_TYPE_UNSET;
-    memset(o->key, 0, CONFIG_KEY_MAX_LEN);
-    memset(&o->value, 0, sizeof(union config_value));
-    return 1;
-}
-
 static i32 match_options(struct config *cfg_o,
-    const VECTOR(struct config_option) options)
+    const VECTOR(struct config_option_intermediate) iopts)
 {
     i32 n_matched = 0;
     for (u32 i = 0; i < cfg_o->n_options; i++) {
-        for (u32 j = 0; j < vector_size(options); j++) {
-            if (!strncmp(cfg_o->options[i].key, options[j].key,
-                    CONFIG_KEY_MAX_LEN))
-            {
-                memcpy(&cfg_o->options[i], &options[j],
-                    sizeof(struct config_option));
-                n_matched++;
-                break;
+        for (u32 j = 0; j < vector_size(iopts); j++) {
+            if (!strncmp(cfg_o->options[i].key, iopts[j].key,
+                    CONFIG_KEY_MAX_LEN)) {
+                if (try_assign_option(&cfg_o->options[i], &iopts[j]) == 0)
+                    n_matched++;
             }
         }
     }
 
     return n_matched;
+}
+
+static i32 try_assign_option(struct config_option *o,
+    const struct config_option_intermediate *intermediate_option)
+{
+    /* Short-hand */
+    const struct config_option_intermediate *const iopt = intermediate_option;
+
+    if (!can_value_be_type(iopt->value, o->type))
+        return 1;
+
+    strncpy(o->key, iopt->key, CONFIG_KEY_MAX_LEN);
+
+    switch (o->type) {
+        default: case CONFIG_TYPE_UNSET:
+            goto_error("Value (\"%s\") is of unknown type", iopt->value);
+        case CONFIG_TYPE_INT:
+            o->value.i = strtoll(iopt->value, NULL, 0);
+            break;
+        case CONFIG_TYPE_FLOAT:
+            o->value.f = strtod(iopt->value, NULL);
+            break;
+        case CONFIG_TYPE_BOOL:
+            if (!strncasecmp("true", iopt->value, CONFIG_VALUE_MAX_LEN)
+                || !strncmp("1", iopt->value, CONFIG_VALUE_MAX_LEN))
+            {
+                o->value.b = true;
+            } else if (!strncasecmp("false", iopt->value,
+                        CONFIG_VALUE_MAX_LEN)
+                || !strncmp("0", iopt->value, CONFIG_VALUE_MAX_LEN))
+            {
+                o->value.b = false;
+            }            break;
+            break;
+        case CONFIG_TYPE_STRING:
+            strncpy(o->value.str, iopt->value, CONFIG_VALUE_MAX_LEN);
+            break;
+    }
+    return 0;
+
+err:
+    return 1;
+}
+
+static bool can_value_be_type(const char value_buf[CONFIG_VALUE_MAX_LEN],
+    enum config_type desired_type)
+{
+    /* If a value has any non-escaped quotation chars ("),
+     * it can only be a string */
+    const char *chr_p = value_buf;
+    bool found_unescaped_quote = false;
+
+    bool esc = false;
+    do {
+        if (*chr_p == '\\') {
+            esc = !esc;
+        } else if (*chr_p == '"' && !esc) {
+            found_unescaped_quote = true;
+            break;
+        } else {
+            esc = false;
+        }
+    } while (*(++chr_p));
+    if (found_unescaped_quote)
+        return desired_type == CONFIG_TYPE_STRING;
+
+    /* Temporary variables */
+    char *endp;
+    union {
+        i32 i32_;
+        i64 i64_;
+        f64 f64_;
+    } ret;
+
+    switch (desired_type) {
+    default: case CONFIG_TYPE_UNSET:
+        return false;
+    case CONFIG_TYPE_INT:
+        errno = 0;
+        endp = NULL;
+        ret.i64_ = strtoll(value_buf, &endp, 0);
+        if (ret.i64_ == 0 && endp == value_buf)
+            return false;
+        return errno == 0;
+    case CONFIG_TYPE_FLOAT:
+        errno = 0;
+        endp = NULL;
+        ret.f64_ = strtod(value_buf, &endp);
+        if (ret.f64_ == 0 && endp == value_buf)
+            return false;
+        return errno == 0;
+    case CONFIG_TYPE_BOOL:
+        return !strncasecmp(value_buf, "true", CONFIG_KEY_MAX_LEN) ||
+            !strncasecmp(value_buf, "false", CONFIG_KEY_MAX_LEN) ||
+            !strncasecmp(value_buf, "0", CONFIG_KEY_MAX_LEN) ||
+            !strncasecmp(value_buf, "1", CONFIG_KEY_MAX_LEN);
+    case CONFIG_TYPE_STRING:
+        return true;
+    }
 }
 
 #define is_whitespace(char) (char == ' ' || char == '\t')
@@ -336,11 +393,12 @@ struct config_parse_global_ctx {
     u32 flags;
 };
 
-static VECTOR(struct config_option) read_options(const char *file_path)
+static VECTOR(struct config_option_intermediate)
+read_options(const char *file_path)
 {
     FILE *fp = NULL;
 
-    VECTOR(struct config_option) options = NULL;
+    VECTOR(struct config_option_intermediate) iopts = NULL;
     struct config_parse_global_ctx global = {
         .file_path = file_path,
     };
@@ -353,7 +411,7 @@ static VECTOR(struct config_option) read_options(const char *file_path)
         goto_error("Couldn't open config file \"%s\" for reading: %s",
             file_path, strerror(errno));
 
-    options = vector_new(struct config_option);
+    iopts = vector_new(struct config_option_intermediate);
 
     while (global.n_read = getline(&global.line, &global.line_length, fp),
             global.n_read >= 0)
@@ -374,7 +432,8 @@ static VECTOR(struct config_option) read_options(const char *file_path)
         {
             ctx.curr_char = global.line[global.char_index];
             ctx.escaped = ctx.prev_char == '\\' && ctx.curr_char != '\\';
-            ctx.comment = is_whitespace(ctx.prev_char) &&
+            ctx.comment =
+                (is_whitespace(ctx.prev_char) || global.char_index == 0) &&
                 (ctx.curr_char == ';' || ctx.curr_char == '#');
 
             if (ctx.escaped && ctx.curr_char == '\n') {
@@ -411,12 +470,10 @@ done_line:;
             s_log_debug("<<< KEY/VALUE READY ACK");
             ctx_set_flag(&ctx, FLAG_KEY_VALUE_READY, false);
 
-            struct config_option tmp = { 0 };
-            if (assign_option(&tmp, global.key_buf, global.value_buf))
-                goto_error("Failed to assign the key and value "
-                    "to the option struct");
-
-            vector_push_back(options, tmp);
+            struct config_option_intermediate tmp = { 0 };
+            strncpy(tmp.key, global.key_buf, CONFIG_KEY_MAX_LEN);
+            strncpy(tmp.value, global.value_buf, CONFIG_VALUE_MAX_LEN);
+            vector_push_back(iopts, tmp);
             s_log_debug("new key/value: %s = %s", global.key_buf, global.value_buf);
             memset(global.key_buf, 0, CONFIG_KEY_MAX_LEN);
             memset(global.value_buf, 0, CONFIG_VALUE_MAX_LEN);
@@ -434,14 +491,14 @@ done_line:;
             file_path, strerror(errno));
     fp = NULL;
 
-    return options;
+    return iopts;
 
 err:
     ctx.global_ctx_p_ = NULL;
     if (global.line != NULL)
         u_nfree(&global.line);
-    if (options != NULL)
-        vector_destroy(&options);
+    if (iopts != NULL)
+        vector_destroy(&iopts);
     if (fp != NULL) {
         if (fclose(fp))
             s_log_error("Couldn't close the file stream of \"%s\": %s",
