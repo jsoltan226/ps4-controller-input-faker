@@ -254,7 +254,7 @@ static i32 ev_bit_check(const u64 bits[], u32 n_bits, const i32 *checks)
 
         const u64 mask = 1ULL << (u64)(checks[i] % 64);
         if (!(bits[checks[i] / 64] & mask)) {
-            //s_log_error("Bit 0x%x not present", checks[i]);
+            //s_log_error("Bit %#x not present", checks[i]);
             ret++;
         }
 

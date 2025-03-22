@@ -54,7 +54,7 @@ i32 kbddev_init(kbddev_t *kbddev_p)
     }
     for (u32 i = 0; i < u_arr_size(evdev_key_bits); i++) {
         if (ioctl(ret.fd, UI_SET_KEYBIT, evdev_key_bits[i]) == -1) {
-            goto_error("Failed to set KEY bit 0x%x on uinput device: %s",
+            goto_error("Failed to set KEY bit %#x on uinput device: %s",
                 evdev_key_bits[i], strerror(errno));
         }
     }

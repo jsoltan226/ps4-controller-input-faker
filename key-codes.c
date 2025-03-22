@@ -48,7 +48,7 @@ void evdev_print_caps(i32 fd)
         if (!(ev_bits[i / 64] & (1ULL << (u64)(i % 64))))
             continue;
 
-        printf("- %s (0x%x)\n", ev_type_strings[i], i);
+        printf("- %s (%#x)\n", ev_type_strings[i], i);
 
         /* EV_REP and upwards are useless to use and yet often
          * EVIOCGBIT fails for them */
@@ -66,7 +66,7 @@ void evdev_print_caps(i32 fd)
 
         for (u32 j = 0; j < ev_max_vals[i]; j++) {
             if (bits[j / 64] & (1ULL << (u64)(j % 64)))
-                printf("-- %s (0x%x)\n", ev_strings[i][j], j);
+                printf("-- %s (%#x)\n", ev_strings[i][j], j);
         }
         printf("\n");
     }
