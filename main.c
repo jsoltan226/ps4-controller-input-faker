@@ -58,7 +58,7 @@ int main(int argc, char **argv)
         evdev_find_and_load_devices(WATCHED_DEVICE_TYPES);
     if (devices == NULL)
         goto_error("Error while loading active event devices. Stop.");
-    s_log_debug("Loaded %u event device(s)", vector_size(devices));
+    s_log_info("Loaded %u event device(s)", vector_size(devices));
 
     struct evdev_monitor mon = { 0 };
     if (evdev_monitor_init(&mon))
@@ -125,10 +125,11 @@ int main(int argc, char **argv)
     ret = EXIT_SUCCESS;
 err:
     atomic_flag_clear(&running);
+    vector_destroy(&global_poll_fds);
     evdev_monitor_destroy(&mon);
     evdev_list_destroy(&devices);
     kbddev_destroy(&fake_keyboard);
-    s_log_debug("Cleanup OK, exiting with code %i", ret);
+    s_log_info("Cleanup OK, exiting with code %i", ret);
     return ret;
 }
 

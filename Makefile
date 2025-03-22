@@ -100,7 +100,8 @@ SYSTEMD_SERVICE_INSTALL_DIR ?= /etc/systemd/system
 .NOTPARALLEL: all release br bdr build-tests install
 
 # Build targets
-all: CFLAGS = -ggdb -O0 -Wall
+all: CFLAGS = -ggdb -O0 -Wall -fsanitize=address
+all: LDFLAGS += -fsanitize=address
 all: $(OBJDIR) $(BINDIR) $(EXE)
 
 release: LDFLAGS += -flto
@@ -152,7 +153,6 @@ test-hooks:
 # Test execution targets
 run-tests: tests
 
-tests: CFLAGS = -ggdb -O0 -Wall
 tests: build-tests test-hooks
 	@n_passed=0; \
 	$(ECHO) -n > $(TEST_LOGFILE); \
@@ -175,7 +175,8 @@ tests: build-tests test-hooks
 
 
 # Test compilation targets
-build-tests: CFLAGS = -ggdb -O0 -Wall
+build-tests: CFLAGS = -ggdb -O0 -Wall -fsanitize=address
+build-tests: LDFLAGS += -fsanitize=address
 build-tests: $(OBJDIR) $(BINDIR) $(TEST_BINDIR) $(TEST_LIB) compile-tests
 
 compile-tests: CFLAGS = -ggdb -O0 -Wall

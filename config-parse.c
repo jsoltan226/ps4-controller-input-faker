@@ -7,20 +7,42 @@
 #include <core/vector.h>
 #include <errno.h>
 #include <stdio.h>
+#include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 
 #define MODULE_NAME "config"
 
+#define CONFIG_PARSE_STATES_LIST    \
+    X_(STATE_FAIL)                  \
+    X_(STATE_IN_NOTHING)            \
+    X_(STATE_IN_KEY)                \
+    X_(STATE_IN_VALUE)              \
+    X_(STATE_IN_SECTION)            \
+
+#define X_(name) name,
 enum config_parse_state {
-    STATE_FAIL = -1,
-    STATE_IN_NOTHING,
-    STATE_IN_KEY,
-    STATE_IN_VALUE,
-    STATE_IN_SECTION,
-    CONFIG_PARSE_STATE_MAX
+    CONFIG_PARSE_STATES_LIST
+    CONFIG_PARSE_N_STATES
 };
+#undef X_
+
+static_assert(CONFIG_PARSE_N_STATES <= 32,
+    "Too many states (cannot assign each a bit in a u32)");
+#define X_(name) name##_MASK_ = 1U << name,
+enum config_parse_state_mask {
+    CONFIG_PARSE_STATES_LIST
+};
+#undef X_
+
+#define X_(name) #name,
+static const char *const config_parse_state_strings[] = {
+    CONFIG_PARSE_STATES_LIST
+};
+#undef X_
+
+#undef CONFIG_PARSE_STATES_LIST
 
 struct config_parse_ctx {
     u32 line_number;
@@ -36,6 +58,7 @@ struct config_parse_ctx {
 struct config_option_intermediate {
     char key[CONFIG_KEY_MAX_LEN];
     char value[CONFIG_VALUE_MAX_LEN];
+    char section[CONFIG_SECTION_MAX_LEN];
 };
 
 enum config_parse_global_ctx_flag {
@@ -44,6 +67,9 @@ enum config_parse_global_ctx_flag {
     FLAG_KEY_VALUE_READY,
     FLAG_SKIP_INCREMENT_CHAR_INDEX,
     FLAG_DROP_LINE,
+    FLAG_VALUE_IN_SINGLE_QUOTATION,
+    FLAG_VALUE_IN_DOUBLE_QUOTATION,
+    FLAG_ESCAPED_LINE_BREAK,
     CONFIG_PARSE_GLOBAL_CTX_FLAG_MAX
 };
 
@@ -74,6 +100,12 @@ static inline char ctx_read_value(const struct config_parse_ctx *ctx, u32 index)
 static inline u32 ctx_get_value_strlen(const struct config_parse_ctx *ctx);
 static inline void ctx_write_value(struct config_parse_ctx *ctx,
     u32 index, char c);
+static inline char ctx_read_section(const struct config_parse_ctx *ctx,
+    u32 index);
+static inline u32 ctx_get_section_strlen(const struct config_parse_ctx *ctx);
+static inline void ctx_write_section(struct config_parse_ctx *ctx,
+    u32 index, char c);
+static inline void ctx_reset_section(struct config_parse_ctx *ctx);
 static inline void ctx_set_state(struct config_parse_ctx *ctx,
     enum config_parse_state new_state);
 static inline bool ctx_get_flag(const struct config_parse_ctx *ctx,
@@ -142,43 +174,45 @@ err:
 
 static void handle_in_nothing(struct config_parse_ctx *ctx)
 {
-    if (ctx->curr_char == ']' && !ctx->escaped)
+    if (ctx->escaped)
+        return;
+
+    if (ctx->curr_char == ']') {
         syntax_error("Section tag closing (']') "
                 "without an opening ('[') in the same line");
-    if (ctx->curr_char == '[' && !ctx->escaped) {
+    } else if (ctx->curr_char == '[') {
         if (ctx_get_flag(ctx, FLAG_LINE_HAS_SECTION_TAG)) {
             syntax_error("More than one section tags (\"[...]\") "
                     "in a single line");
         }
+        ctx_reset_section(ctx);
         ctx_set_state(ctx, STATE_IN_SECTION);
         ctx_set_flag(ctx, FLAG_LINE_HAS_SECTION_TAG, true);
-    }
-
-    if (ctx->curr_char == '=' && !ctx->escaped)
-        syntax_error("Assignment ('=') to nothing");
-
-    if (ctx->comment) {
+    } else if (ctx->curr_char == '=') {
+        syntax_error("Assignment ('=') to nothing (Empty key)");
+    } else if (ctx->comment) {
         ctx_set_flag(ctx, FLAG_DROP_LINE, true);
         return;
-    }
-
-    if (is_printable_char(ctx->curr_char)) {
+    } else if (is_printable_char(ctx->curr_char)) {
         s_log_debug("printable char: 0x%x ('%c')", ctx->curr_char, ctx->curr_char);
-        ctx_write_key(ctx, 0, ctx->curr_char);
-        ctx_write_key(ctx, 1, '\0');
         ctx_set_state(ctx, STATE_IN_KEY);
+        ctx_write_key(ctx, 0, ctx->curr_char);
     }
 }
 
 static void handle_in_key(struct config_parse_ctx *ctx)
 {
     if (ctx->curr_char == '[' && !ctx->escaped)
-        syntax_error("Section tag opening ('[') inside a value");
+        syntax_error("Section tag opening ('[') inside a key");
     if (ctx->curr_char == ']' && !ctx->escaped)
-        syntax_error("Section tag closing (']') inside a value");
+        syntax_error("Section tag closing (']') inside a key");
 
     if (ctx->comment)
         syntax_error("Comment inside a key");
+
+    /* Non-escaped escape characters should be skipped */
+    if (ctx->curr_char == '\\' && !ctx->escaped)
+        return;
 
     if (ctx->curr_char == '=' && !ctx->escaped) {
         if (ctx_get_flag(ctx, FLAG_LINE_HAS_KEY_VALUE)) {
@@ -186,14 +220,13 @@ static void handle_in_key(struct config_parse_ctx *ctx)
                     "in a single line");
         }
         ctx_set_flag(ctx, FLAG_LINE_HAS_KEY_VALUE, true);
-        ctx_set_state(ctx, STATE_IN_VALUE);
 
         /* Strip off the whitespace around the '=' */
         u32 j = ctx_get_char_index(ctx) - 1;
         while (j > 0 && is_whitespace(ctx_read_key(ctx, j)))
             j--;
         if (j == 0)
-            syntax_error("Empty key");
+            syntax_error("Assignment ('=') of nothing (Empty value)");
 
         if (ctx_read_key(ctx, j) == '\\') /* Respect the escape char */
             j++;
@@ -204,11 +237,14 @@ static void handle_in_key(struct config_parse_ctx *ctx)
                 is_whitespace(ctx->curr_char))
             ctx_increment_char_index(ctx);
 
+        /* Null-terminate the key */
+        ctx_write_key(ctx, ctx_get_key_strlen(ctx), '\0');
+
         /* Skip advancing to the next character in the for loop
          * since we have already done that */
         ctx_set_flag(ctx, FLAG_SKIP_INCREMENT_CHAR_INDEX, true);
 
-        ctx_write_key(ctx, ctx_get_key_strlen(ctx), '\0');
+        ctx_set_state(ctx, STATE_IN_VALUE);
 
         return;
     }
@@ -218,42 +254,75 @@ static void handle_in_key(struct config_parse_ctx *ctx)
 
 static void handle_in_value(struct config_parse_ctx *ctx)
 {
-    if (ctx->curr_char == '[' && !ctx->escaped)
-        syntax_error("Section tag opening ('[') inside a key");
-    if (ctx->curr_char == ']' && !ctx->escaped)
-        syntax_error("Section tag closing (']') inside a key");
+    /* Special characters lose their meaning when they are escaped
+     * or in a comment, so we handle them separately from normal ones */
+    /* Also, being escaped and in a comment is by definition mutually exclusive
+     * and for us means that different paths should be taken */
+#define CHR_ESCAPED ((u16)(255 + 1))
+#define CHR_COMMENT ((u16)(255 + 2))
+    u16 chr = (u16)ctx->curr_char;
+    if (ctx->escaped) chr = CHR_ESCAPED;
+    else if (ctx->comment) chr = CHR_COMMENT;
+    switch (chr) {
+        default:
+        case CHR_ESCAPED:
+            ctx_write_value(ctx, ctx_get_value_strlen(ctx), ctx->curr_char);
+            break;
+        case '[':
+            syntax_error("Section tag opening ('[') inside a value");
+        case ']':
+            syntax_error("Section tag closing (']') inside a value");
+        case '\'':
+            ctx_set_flag(ctx, FLAG_VALUE_IN_SINGLE_QUOTATION,
+                !ctx_get_flag(ctx, FLAG_VALUE_IN_SINGLE_QUOTATION));
+            break;
+        case '"':
+            ctx_set_flag(ctx, FLAG_VALUE_IN_DOUBLE_QUOTATION,
+                !ctx_get_flag(ctx, FLAG_VALUE_IN_DOUBLE_QUOTATION));
+            break;
+        case '\\':
+            /* Non-escaped escape characters should be skipped */
+            break;
+        case '\n':
+        case CHR_COMMENT: /* A comment cuts off the rest of the line */
+            if (ctx_get_flag(ctx, FLAG_VALUE_IN_SINGLE_QUOTATION))
+                syntax_error("Unmatched single quote");
+            if (ctx_get_flag(ctx, FLAG_VALUE_IN_DOUBLE_QUOTATION))
+                syntax_error("Unmatched double quote");
 
-    if ((ctx->curr_char == '\n' && !ctx->escaped) || ctx->comment) {
-        const u32 value_len = ctx_get_value_strlen(ctx);
-        const char comment_preceding_char = ctx_read_value(ctx, value_len - 1);
-
-        /* Delete the whitespace preceding the comment character */
-        if (ctx->comment && is_whitespace(comment_preceding_char)) {
-            ctx_write_value(ctx, value_len - 1, '\0');
-        } else {
-            ctx_write_value(ctx, value_len, '\0');
-        }
-        ctx_set_state(ctx, STATE_IN_NOTHING);
-        ctx_set_flag(ctx, FLAG_KEY_VALUE_READY, true);
-        ctx_set_flag(ctx, FLAG_DROP_LINE, true);
-        return;
-    }
-
-    ctx_write_value(ctx, ctx_get_value_strlen(ctx), ctx->curr_char);
+            /* If we are in a comment,
+             * delete the whitespace preceding the comment character */
+            const u32 value_len = ctx_get_value_strlen(ctx);
+            const char comment_preceding_char =
+                ctx_read_value(ctx, value_len - 1);
+            if (ctx->comment && is_whitespace(comment_preceding_char)) {
+                ctx_write_value(ctx, value_len - 1, '\0');
+            } else {
+                ctx_write_value(ctx, value_len, '\0');
+            }
+            ctx_set_state(ctx, STATE_IN_NOTHING);
+            ctx_set_flag(ctx, FLAG_KEY_VALUE_READY, true);
+            ctx_set_flag(ctx, FLAG_DROP_LINE, true);
+            break;
+    };
+#undef CHR_ESCAPED
+#undef CHR_COMMENT
 }
 
 static void handle_in_section(struct config_parse_ctx *ctx)
 {
-    if (ctx->comment)
+    if (ctx->comment) {
         syntax_error("Comment inside a section tag");
-
-    if (ctx->curr_char == '[' && !ctx->escaped)
+    } else if (ctx->curr_char == '[' && !ctx->escaped) {
         syntax_error("Section tag opening ('[') "
                 "inside of an existing section tag");
-    if (ctx->curr_char == '\n' && !ctx->escaped)
+    } else if (ctx->curr_char == '\n' && !ctx->escaped) {
         syntax_error("Non-closed section tag (\"[...]\")");
-    if (ctx->curr_char == ']' && !ctx->escaped)
+    } else if (ctx->curr_char == ']' && !ctx->escaped) {
         ctx_set_state(ctx, STATE_IN_NOTHING);
+    } else {
+        ctx_write_section(ctx, ctx_get_section_strlen(ctx), ctx->curr_char);
+    }
 }
 
 #undef is_printable_char
@@ -347,7 +416,7 @@ static bool can_value_be_type(const char value_buf[CONFIG_VALUE_MAX_LEN],
         i32 i32_;
         i64 i64_;
         f64 f64_;
-    } ret;
+    } tmp;
 
     switch (desired_type) {
     default: case CONFIG_TYPE_UNSET:
@@ -355,15 +424,15 @@ static bool can_value_be_type(const char value_buf[CONFIG_VALUE_MAX_LEN],
     case CONFIG_TYPE_INT:
         errno = 0;
         endp = NULL;
-        ret.i64_ = strtoll(value_buf, &endp, 0);
-        if (ret.i64_ == 0 && endp == value_buf)
+        tmp.i64_ = strtoll(value_buf, &endp, 0);
+        if (tmp.i64_ == 0 && endp == value_buf)
             return false;
         return errno == 0;
     case CONFIG_TYPE_FLOAT:
         errno = 0;
         endp = NULL;
-        ret.f64_ = strtod(value_buf, &endp);
-        if (ret.f64_ == 0 && endp == value_buf)
+        tmp.f64_ = strtod(value_buf, &endp);
+        if (tmp.f64_ == 0 && endp == value_buf)
             return false;
         return errno == 0;
     case CONFIG_TYPE_BOOL:
@@ -387,6 +456,7 @@ struct config_parse_global_ctx {
 
     char key_buf[CONFIG_KEY_MAX_LEN + 1];
     char value_buf[CONFIG_VALUE_MAX_LEN + 1];
+    char section_buf[CONFIG_SECTION_MAX_LEN + 1];
 
     enum config_parse_state state;
 
@@ -401,6 +471,7 @@ read_options(const char *file_path)
     VECTOR(struct config_option_intermediate) iopts = NULL;
     struct config_parse_global_ctx global = {
         .file_path = file_path,
+        .state = STATE_IN_NOTHING
     };
     struct config_parse_ctx ctx = {
         .global_ctx_p_ = &global,
@@ -413,12 +484,13 @@ read_options(const char *file_path)
 
     iopts = vector_new(struct config_option_intermediate);
 
+    global.flags = 0;
     while (global.n_read = getline(&global.line, &global.line_length, fp),
             global.n_read >= 0)
     {
-        global.flags = 0;
         global.char_index = 0;
         ctx.line_number++;
+        ctx.escaped = false;
 
         /* Only increment `char_index`
          * if the `FLAG_SKIP_INCREMENT_CHAR_INDEX` isn't set,
@@ -431,7 +503,8 @@ read_options(const char *file_path)
                 ctx_set_flag(&ctx, FLAG_SKIP_INCREMENT_CHAR_INDEX, false))
         {
             ctx.curr_char = global.line[global.char_index];
-            ctx.escaped = ctx.prev_char == '\\' && ctx.curr_char != '\\';
+            if (ctx.curr_char == '\\')
+                ctx.escaped = !ctx.escaped;
             ctx.comment =
                 (is_whitespace(ctx.prev_char) || global.char_index == 0) &&
                 (ctx.curr_char == ';' || ctx.curr_char == '#');
@@ -477,6 +550,32 @@ done_line:;
             s_log_debug("new key/value: %s = %s", global.key_buf, global.value_buf);
             memset(global.key_buf, 0, CONFIG_KEY_MAX_LEN);
             memset(global.value_buf, 0, CONFIG_VALUE_MAX_LEN);
+        }
+        /* Only reset flags on actual new lines */
+        if (!ctx_get_flag(&ctx, FLAG_ESCAPED_LINE_BREAK)) {
+            global.flags = 0;
+            switch (global.state) {
+            case STATE_IN_NOTHING:
+                break;
+            case STATE_FAIL:
+                goto_error("STATE_FAIL is set");
+            case STATE_IN_VALUE:
+                ctx_set_flag(&ctx, FLAG_KEY_VALUE_READY, true);
+                goto done_line;
+            case STATE_IN_KEY:
+                ctx_set_state(&ctx, STATE_FAIL);
+                goto_error("Syntax error in file \"%s\" on line %u: %s",
+                    global.file_path, ctx.line_number,
+                    "Key with no value");
+                break;
+            case STATE_IN_SECTION:
+                ctx_set_state(&ctx, STATE_FAIL);
+                goto_error("Syntax error in file \"%s\" on line %u: %s",
+                    global.file_path, ctx.line_number,
+                    "Non-closed section tag (\"[...]\")");
+            default:
+                goto_error("Invalid state (%u)", global.state);
+            }
         }
     }
 
@@ -559,13 +658,68 @@ static inline void ctx_write_value(struct config_parse_ctx *ctx,
     ctx->global_ctx_p_->value_buf[index] = c;
 }
 
+static inline char ctx_read_section(const struct config_parse_ctx *ctx,
+    u32 index)
+{
+    u_check_params(index < CONFIG_SECTION_MAX_LEN);
+    return ctx->global_ctx_p_->section_buf[index];
+}
+
+static inline u32 ctx_get_section_strlen(const struct config_parse_ctx *ctx)
+{
+    return strnlen(ctx->global_ctx_p_->section_buf, CONFIG_SECTION_MAX_LEN);
+}
+
+static inline void ctx_write_section(struct config_parse_ctx *ctx,
+    u32 index, char c)
+{
+    u_check_params(index < CONFIG_SECTION_MAX_LEN);
+    s_log_debug("write section: 0x%x ('%c')\t@ %u", c, c, index);
+    ctx->global_ctx_p_->section_buf[index] = c;
+}
+
+static inline void ctx_reset_section(struct config_parse_ctx *ctx)
+{
+    memset(ctx->global_ctx_p_->section_buf, 0, CONFIG_SECTION_MAX_LEN);
+}
+
 static inline void ctx_set_state(struct config_parse_ctx *ctx,
     enum config_parse_state new_state)
 {
-    u_check_params(new_state >= STATE_FAIL &&
-        new_state < CONFIG_PARSE_STATE_MAX);
+    u_check_params(new_state >= 0 &&
+        new_state < CONFIG_PARSE_N_STATES);
+    s_assert(ctx->global_ctx_p_->state > 0 &&
+        ctx->global_ctx_p_->state < CONFIG_PARSE_N_STATES,
+        "Invalid current state: %u", ctx->global_ctx_p_->state);
+    static const u32 legal_transitions[CONFIG_PARSE_N_STATES] = {
+        [STATE_FAIL] = 0,
+
+        [STATE_IN_NOTHING] = STATE_FAIL_MASK_
+            | STATE_IN_NOTHING_MASK_
+            | STATE_IN_KEY_MASK_
+            | STATE_IN_SECTION_MASK_,
+
+        [STATE_IN_KEY] = STATE_FAIL_MASK_
+            | STATE_IN_VALUE_MASK_,
+
+        [STATE_IN_VALUE] = STATE_FAIL_MASK_
+            | STATE_IN_NOTHING_MASK_,
+
+        [STATE_IN_SECTION] = STATE_FAIL_MASK_
+            | STATE_IN_NOTHING_MASK_,
+    };
+
+    if (!(legal_transitions[ctx->global_ctx_p_->state] & 1 << new_state)) {
+        s_log_fatal(MODULE_NAME, __func__,
+            "Illegal state transition: %s -> %s",
+            config_parse_state_strings[ctx->global_ctx_p_->state],
+            config_parse_state_strings[new_state]);
+    }
+
     ctx->global_ctx_p_->state = new_state;
-    s_log_debug("SET STATE: %u", new_state);
+    s_log_debug("SET STATE: %s", config_parse_state_strings[new_state]);
+    s_log_debug("section \"%s\"", ctx->global_ctx_p_->section_buf[0] ?
+        ctx->global_ctx_p_->section_buf : "(null)");
 }
 
 static inline bool ctx_get_flag(const struct config_parse_ctx *ctx,

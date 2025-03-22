@@ -7,6 +7,7 @@
 
 #define CONFIG_KEY_MAX_LEN 256U
 #define CONFIG_VALUE_MAX_LEN 1024U
+#define CONFIG_SECTION_MAX_LEN 256U
 
 #define CONFIG_MAX_N_OPTIONS 512U
 
@@ -27,6 +28,7 @@ struct config_option {
         bool b;
         char str[CONFIG_VALUE_MAX_LEN];
     } value;
+    char section[CONFIG_SECTION_MAX_LEN];
 };
 
 struct config {
