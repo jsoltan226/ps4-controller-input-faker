@@ -4,21 +4,6 @@
 #include "window.h"
 #include <core/pressable-obj.h>
 
-#define P_KEYBOARD_N_KEYS 43
-
-struct p_keyboard;
-enum p_keyboard_keycode;
-
-struct p_keyboard * p_keyboard_init(struct p_window *win);
-
-void p_keyboard_update(struct p_keyboard *kb);
-
-const pressable_obj_t * p_keyboard_get_key(const struct p_keyboard *kb,
-    enum p_keyboard_keycode code);
-
-void p_keyboard_destroy(struct p_keyboard **kb_p);
-
-/* Defined at the bottom for better readability */
 #define P_KEYBOARD_KEYCODE_LIST \
     X_(KB_KEYCODE_ENTER)        \
     X_(KB_KEYCODE_SPACE)        \
@@ -64,18 +49,45 @@ void p_keyboard_destroy(struct p_keyboard **kb_p);
     X_(KB_KEYCODE_ARROWLEFT)    \
     X_(KB_KEYCODE_ARROWRIGHT)   \
 
-
 #define X_(name) name,
 enum p_keyboard_keycode {
+    P_KEYBOARD_FAIL_ = -1,
     P_KEYBOARD_KEYCODE_LIST
+    P_KEYBOARD_N_KEYS
 };
 #undef X_
 
+/* The keyboard class/handle */
+struct p_keyboard;
+
+/* Initialize a keyboard with the window `win`.
+ * Returns the pointer to a new keyboard struct on success,
+ * and NULL on failure. */
+struct p_keyboard * p_keyboard_init(struct p_window *win);
+
+/* Update (poll) all keys in `kb` */
+void p_keyboard_update(struct p_keyboard *kb);
+
+/* Retrieve a pointer to the key corresponding to `code` from `kb`.
+ * Note that the pointer should never be written to!
+ *
+ * Always succeeds (or crashes the program if the parameters are invalid) */
+const pressable_obj_t * p_keyboard_get_key(const struct p_keyboard *kb,
+    enum p_keyboard_keycode code);
+
+/* Destroys the keyboard that `*kb_p` points to,
+ * and sets the value of `*kb_p` to NULL */
+void p_keyboard_destroy(struct p_keyboard **kb_p);
+
+
+/* For internal use by the implementation */
+#ifdef P_INTERNAL_GUARD__
 #define X_(name) #name,
 static const char *const p_keyboard_keycode_strings[] = {
     P_KEYBOARD_KEYCODE_LIST
 };
 #undef X_
+#endif /* P_INTERNAL_GUARD__ */
 
 #undef P_KEYBOARD_KEYCODE_LIST
 

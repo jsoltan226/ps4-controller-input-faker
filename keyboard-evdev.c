@@ -5,9 +5,7 @@
 #include <core/util.h>
 #include <core/pressable-obj.h>
 #include <core/vector.h>
-#include <stdio.h>
 #include <errno.h>
-#include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
 #include <dirent.h>
@@ -69,7 +67,6 @@ void evdev_keyboard_destroy(struct keyboard_evdev *kb)
     if (kb->poll_fds != NULL) vector_destroy(&kb->poll_fds);
 
     /* All members are already reset */
-
 }
 
 void evdev_keyboard_update_all_keys(struct keyboard_evdev *kb,
@@ -79,15 +76,13 @@ void evdev_keyboard_update_all_keys(struct keyboard_evdev *kb,
 
     u32 n_poll_fds = vector_size(kb->poll_fds);
 
-try_again:
-    if (poll(kb->poll_fds, n_poll_fds, 1) == -1) {
-        if (errno == EINTR) /* Interrupted by signal */
-            goto try_again;
-
+    i32 ret = poll(kb->poll_fds, n_poll_fds, 0);
+    if (ret < 0) {
         s_log_error("Failed to poll() on keyboard event devices: %s",
             strerror(errno));
         return;
-    }
+    } else if (ret == 0) /* No file descriptors are ready */
+        return;
 
     bool updated_keys[P_KEYBOARD_N_KEYS] = { 0 };
     for (u32 i = 0; i < n_poll_fds; i++) {

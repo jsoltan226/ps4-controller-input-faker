@@ -1,16 +1,16 @@
 #ifndef UTIL_H_
 #define UTIL_H_
+#include "static-tests.h"
 
 #include "log.h"
-#include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
 
 #define u_BUF_SIZE  1024
 #define u_PATH_FROM_BIN_TO_ASSETS "../assets/"
 
-#define u_FILEPATH_MAX 256
-typedef const char filepath_t[u_FILEPATH_MAX];
+#define u_FILEPATH_MAX 255
+typedef char filepath_t[u_FILEPATH_MAX + 1];
 
 
 #define goto_error(...) do {    \
@@ -29,7 +29,7 @@ typedef const char filepath_t[u_FILEPATH_MAX];
 #define u_nbits(x) ((((x) - 1) / (8 * sizeof(u64))) + 1)
 
 #define u_rgba_swap_b_r(color) do {     \
-    const register u8 tmp = color.b;    \
+    register const u8 tmp = color.b;    \
     color.b = color.r;                  \
     color.r = tmp;                      \
 } while (0)

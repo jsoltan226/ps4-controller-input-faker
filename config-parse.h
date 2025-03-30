@@ -14,6 +14,7 @@ enum config_type {
     CONFIG_TYPE_FLOAT,
     CONFIG_TYPE_BOOL,
     CONFIG_TYPE_STRING,
+    CONFIG_TYPE_ENUM,
     CONFIG_N_TYPES,
 };
 
@@ -27,7 +28,7 @@ struct config_option {
      * Since the section string is the least useful one here,
      * "cut out" space from it so that it can be used to store the
      * `type` and `matched` members */
-#define CONFIG_SECTION_MAX_LEN (256U - 8)
+#define CONFIG_SECTION_MAX_LEN (256U - 24U)
     char section[CONFIG_SECTION_MAX_LEN];
 
     union config_value {
@@ -36,7 +37,16 @@ struct config_option {
         bool b;
 #define CONFIG_VALUE_MAX_LEN 512U
         char str[CONFIG_VALUE_MAX_LEN];
+        i64 e;
     } value;
+    struct config_enum_info {
+        const struct config_enum_value {
+            const char *name;
+            const i64 value;
+        } *possible_values;
+        u32 n_possible_values;
+    } enum_info;
+
     enum config_type type;
 
     bool matched;

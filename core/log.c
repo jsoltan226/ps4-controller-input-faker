@@ -1,4 +1,5 @@
 #include "log.h"
+#include "buildtype.h"
 #include "int.h"
 #include <stdio.h>
 #include <errno.h>
@@ -11,11 +12,11 @@
 
 static FILE *out_log_file = NULL, *err_log_file = NULL;
 static bool user_fault = NO_USER_FAULT;
-static s_log_level current_log_level = LOG_INFO;
+static enum s_log_level current_log_level = LOG_INFO;
 
-void s_log(s_log_level level, const char *module_name, const char *fmt, ...)
+void s_log(enum s_log_level level, const char *module_name, const char *fmt, ...)
 {
-    if (level < current_log_level)
+    if (level > current_log_level)
         return;
 
     if (err_log_file == NULL) {
@@ -99,12 +100,12 @@ i32 s_set_log_err_filep(FILE *fp)
     return 0;
 }
 
-void s_set_log_level(s_log_level new_log_level)
+void s_set_log_level(enum s_log_level new_log_level)
 {
     current_log_level = new_log_level;
 }
 
-s_log_level s_get_log_level(void)
+enum s_log_level s_get_log_level(void)
 {
     return current_log_level;
 }

@@ -21,7 +21,7 @@
 #define UINPUT_DEV_PATH "/dev/uinput"
 #define UINPUT_DEV_FALLBACK_PATH "/dev/input/uinput"
 
-i32 kbddev_init(kbddev_t *kbddev_p)
+i32 kbddev_init(kbddev_t *kbddev_p, u16 fake_keypress_keycode)
 {
     u_check_params(kbddev_p != NULL);
 
@@ -52,12 +52,17 @@ i32 kbddev_init(kbddev_t *kbddev_p)
         goto_error("Failed to set EV_KEY bit on uinput device: %s",
             strerror(errno));
     }
+    /*
     for (u32 i = 0; i < u_arr_size(evdev_key_bits); i++) {
         if (ioctl(ret.fd, UI_SET_KEYBIT, evdev_key_bits[i]) == -1) {
             goto_error("Failed to set KEY bit %#x on uinput device: %s",
                 evdev_key_bits[i], strerror(errno));
         }
     }
+    */
+    if (ioctl(ret.fd, UI_SET_KEYBIT, fake_keypress_keycode) == -1)
+        goto_error("Failed to set KEY bit %#x on uinput device: %s",
+            fake_keypress_keycode, strerror(errno));
 
     /* Set up the fake device */
     struct uinput_setup setup = ds4_setup;

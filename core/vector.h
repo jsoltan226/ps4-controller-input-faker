@@ -1,5 +1,6 @@
 #ifndef VECTOR_H_
 #define VECTOR_H_
+#include "static-tests.h"
 
 #include "int.h"
 #include "log.h"
@@ -24,11 +25,11 @@ void * vector_init(u32 item_size);
 #define vector_at(v, index) (v[index])
 
 /* Append `item` to `v` */
-#define vector_push_back(v, item...) do {                               \
+#define vector_push_back(v, ...) do {                                   \
     if (v == NULL)                                                      \
         s_log_fatal("vector", "vector_push_back", "invalid parameters");\
     v = vector_increase_size__(v);                                      \
-    v[vector_size(v) - 1] = item;                                       \
+    v[vector_size(v) - 1] = __VA_ARGS__;                                \
 } while (0)
 void * vector_increase_size__(void *v);
 
@@ -37,12 +38,12 @@ void * vector_increase_size__(void *v);
 void * vector_pop_back__(void *v);
 
 /* Insert `item` to `v` at index `at` */
-#define vector_insert(v, at, item...) do {                              \
-    if (v == NULL || at < 0 || at > vector_size(v))                     \
+#define vector_insert(v, at, ...) do {                                  \
+    if (v == NULL || (i32)at < 0 || at > vector_size(v))                \
         s_log_fatal("vector", "vector_insert", "invalid parameters");   \
     v = vector_increase_size__(v);                                      \
     vector_memmove__(v, at, at + 1, vector_size(v) - at);               \
-    v[at] = item;                                                       \
+    v[at] = __VA_ARGS__;                                                \
 } while (0)
 /* Won't do anything if the vector doesn't have enough spare capacity */
 void vector_memmove__(void *v, u32 src_index, u32 dst_index, u32 nmemb);

@@ -21,7 +21,7 @@ static_assert(sizeof(kbddev_t) <= 8,
 
 /* Initializes a new fake keyboard device in `*kbddev_p`.
  * Returns 0 on success and non-zero on failure. */
-i32 kbddev_init(kbddev_t *kbddev_p);
+i32 kbddev_init(kbddev_t *kbddev_p, u16 fake_keypress_keycode);
 
 /* Destroys the fake keyboard device pointed to by `kbddev_p`. */
 void kbddev_destroy(kbddev_t *kbddev_p);
@@ -30,9 +30,11 @@ void kbddev_destroy(kbddev_t *kbddev_p);
 #include <linux/uinput.h>
 #include <linux/input-event-codes.h>
 
+/*
 static const u8 evdev_key_bits[] = {
     KEY_F21
 };
+*/
 
 #define KBDDEV_UINPUT_DEV_NAME "PS4 controller fake keyboard"
 static const struct uinput_setup ds4_setup = {

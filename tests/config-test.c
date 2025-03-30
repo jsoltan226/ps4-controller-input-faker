@@ -9,32 +9,17 @@
 #define CONFIG_FILE_PATH "tests/config.test.ini"
 
 static struct config_option options[] = {
-    (struct config_option) {
-        .key = "test",
-        .type = CONFIG_TYPE_STRING,
-    },
-    (struct config_option) {
-        .key = "test_int",
-        .type = CONFIG_TYPE_INT,
-    },
-    (struct config_option) {
-        .key = "test_float",
-        .type = CONFIG_TYPE_FLOAT,
-    },
-    (struct config_option) {
-        .key = "test_bool",
-        .type = CONFIG_TYPE_BOOL,
-    },
-    (struct config_option) {
-        .key = "test_string",
-        .type = CONFIG_TYPE_STRING,
-    },
-    (struct config_option) {
+    { .key = "test", .type = CONFIG_TYPE_STRING },
+    { .key = "test_int", .type = CONFIG_TYPE_INT },
+    { .key = "test_float", .type = CONFIG_TYPE_FLOAT },
+    { .key = "test_bool", .type = CONFIG_TYPE_BOOL },
+    { .key = "test_string", .type = CONFIG_TYPE_STRING },
+    {
         .key = "test_section_1",
         .section = "section",
         .type = CONFIG_TYPE_STRING,
     },
-    (struct config_option) {
+    {
         .key = "test_section_2",
         .section = "section.subsection",
         .type = CONFIG_TYPE_STRING,
@@ -46,13 +31,13 @@ static struct config cfg = {
 };
 
 static const union config_value expected_values[u_arr_size(options)] = {
-    (union config_value) { .str = "SUS" },
-    (union config_value) { .i = -7894253 },
-    (union config_value) { .f = 3.14159265359 },
-    (union config_value) { .b = true },
-    (union config_value) { .str = "string" },
-    (union config_value) { .str = "section_test" },
-    (union config_value) { .str = "subsection_test" },
+    { .str = "SUS" },
+    { .i = -7894253 },
+    { .f = 3.14159265359 },
+    { .b = true },
+    { .str = "string" },
+    { .str = "section_test" },
+    { .str = "subsection_test" },
 };
 
 int main(void)

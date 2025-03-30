@@ -77,6 +77,7 @@ static i32 match_options(struct config *cfg_o,
     const VECTOR(struct config_option_intermediate) intermediate_options);
 static i32 try_write_value(union config_value *o,
     const char value_buf[CONFIG_VALUE_MAX_LEN],
+    const struct config_enum_info *enum_info,
     enum config_type desired_value_type);
 
 static void handle_in_nothing(struct config_parse_ctx *ctx);
@@ -138,9 +139,10 @@ config_parse(const char *config_file_path, struct config *o)
     else if (n_matched_options == 0)
         s_log_warn("No matched options in configuration file \"%s\"",
             config_file_path);
-    else /* if (n_matched_options > 0) */
+    else {/* if (n_matched_options > 0) */
         s_log_debug("Matched %i option(s) from file \"%s\"",
             n_matched_options, config_file_path);
+    }
 
     return 0;
 }
@@ -179,7 +181,7 @@ void config_snprintf_section_and_key(char *buf, u32 buf_size,
 }
 
 /* Parse state getters and setters */
-static inline i32 ctx_get_n_read(const struct config_parse_ctx *ctx);
+static inline u32 ctx_get_n_read(const struct config_parse_ctx *ctx);
 static inline u32 ctx_get_char_index(const struct config_parse_ctx *ctx);
 static inline char ctx_read_key(const struct config_parse_ctx *ctx, u32 index);
 static inline u32 ctx_get_key_strlen(const struct config_parse_ctx *ctx);
@@ -412,8 +414,9 @@ static i32 match_options(struct config *cfg_o,
                     s_log_error("Duplicate key: \"%s\"", full_key_buf);
                     return -1;
                 } else if (!try_write_value(&cfg_o->options[i].value,
-                        iopts[j].value, cfg_o->options[i].type))
-                {
+                            iopts[j].value, &cfg_o->options[i].enum_info,
+                            cfg_o->options[i].type)
+                ) {
                     cfg_o->options[i].matched = true;
                     n_matched++;
                 }
@@ -426,6 +429,7 @@ static i32 match_options(struct config *cfg_o,
 
 static i32 try_write_value(union config_value *o,
     const char value_buf[CONFIG_VALUE_MAX_LEN],
+    const struct config_enum_info *enum_info,
     enum config_type desired_value_type)
 {
     char *end_p = NULL; /* Temporary variable for `strtoXX` */
@@ -462,6 +466,25 @@ static i32 try_write_value(union config_value *o,
     case CONFIG_TYPE_STRING:
         (void) strncpy(o->str, value_buf, CONFIG_VALUE_MAX_LEN);
         break;
+    case CONFIG_TYPE_ENUM:
+        ;
+        bool found_value = false;
+        for (u32 i = 0; i < enum_info->n_possible_values; i++) {
+            if (!strncmp(value_buf, enum_info->possible_values[i].name,
+                    CONFIG_VALUE_MAX_LEN))
+            {
+                s_log_debug("Matched enum value \"%s\" = %s (%lli)",
+                    value_buf, enum_info->possible_values[i].name,
+                    enum_info->possible_values[i].value);
+                o->e = enum_info->possible_values[i].value;
+                found_value = true;
+                break;
+            }
+        }
+        if (!found_value)
+            return 1;
+
+        break;
     default:
         s_log_fatal(MODULE_NAME, __func__,
             "Value (\"%s\") is of unknown type (%u)",
@@ -474,7 +497,7 @@ struct config_parse_global_ctx {
     const char *file_path;
     char *line;
     u64 line_length;
-    i32 n_read;
+    u32 n_read;
     u32 char_index;
 
     char key_buf[CONFIG_KEY_MAX_LEN + 1];
@@ -518,9 +541,11 @@ read_options(const char *file_path, enum config_parse_ret *ret)
     iopts = vector_new(struct config_option_intermediate);
 
     global.flags = 0;
-    while (global.n_read = getline(&global.line, &global.line_length, fp),
-            global.n_read >= 0)
+    i32 tmp_n_read = 0;
+    while (tmp_n_read = getline(&global.line, &global.line_length, fp),
+            tmp_n_read >= 0)
     {
+        global.n_read = (u32)tmp_n_read;
         global.char_index = 0;
         ctx.line_number++;
         ctx.escaped = false;
@@ -530,7 +555,7 @@ read_options(const char *file_path, enum config_parse_ret *ret)
          * if the `FLAG_SKIP_INCREMENT_CHAR_INDEX` isn't set,
          * and reset the flag's value back to false */
         for (global.char_index = 0;
-            global.char_index < global.n_read;
+            global.char_index < (u32)global.n_read;
 
             global.char_index +=
                     !ctx_get_flag(&ctx, FLAG_SKIP_INCREMENT_CHAR_INDEX),
@@ -575,9 +600,15 @@ done_line:;
             ctx_set_flag(&ctx, FLAG_KEY_VALUE_READY, false);
 
             struct config_option_intermediate tmp = { 0 };
-            strncpy(tmp.key, global.key_buf, CONFIG_KEY_MAX_LEN);
-            strncpy(tmp.value, global.value_buf, CONFIG_VALUE_MAX_LEN);
-            strncpy(tmp.section, global.section_buf, CONFIG_SECTION_MAX_LEN);
+            memcpy(tmp.key, global.key_buf, CONFIG_KEY_MAX_LEN);
+            tmp.key[CONFIG_KEY_MAX_LEN - 1] = '\0';
+
+            memcpy(tmp.value, global.value_buf, CONFIG_VALUE_MAX_LEN);
+            tmp.value[CONFIG_VALUE_MAX_LEN - 1] = '\0';
+
+            memcpy(tmp.section, global.section_buf, CONFIG_SECTION_MAX_LEN);
+            tmp.section[CONFIG_SECTION_MAX_LEN - 1] = '\0';
+
             vector_push_back(iopts, tmp);
             s_log_debug("new key/value: %s = %s", global.key_buf, global.value_buf);
             memset(global.key_buf, 0, CONFIG_KEY_MAX_LEN);
@@ -652,7 +683,7 @@ err:
 #undef is_whitespace
 #undef goto_error_ret
 
-static inline i32 ctx_get_n_read(const struct config_parse_ctx *ctx)
+static inline u32 ctx_get_n_read(const struct config_parse_ctx *ctx)
 {
     return ctx->global_ctx_p_->n_read;
 }
@@ -776,8 +807,9 @@ static inline bool ctx_get_flag(const struct config_parse_ctx *ctx,
 static inline void ctx_set_flag(struct config_parse_ctx *ctx,
     enum config_parse_global_ctx_flag flag, bool value)
 {
-    if (flag == FLAG_KEY_VALUE_READY && value == true)
+    if (flag == FLAG_KEY_VALUE_READY && value == true) {
         s_log_debug(">>> KEY/VALUE READY!");
+    }
     u_check_params(flag >= 0 && flag < CONFIG_PARSE_GLOBAL_CTX_FLAG_MAX);
     if (value)
         ctx->global_ctx_p_->flags |= (1U << flag);

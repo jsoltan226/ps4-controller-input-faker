@@ -6,15 +6,26 @@
 #include <stdnoreturn.h>
 #include "int.h"
 
-typedef enum {
-    LOG_DEBUG,
-    LOG_INFO,
-    LOG_WARNING,
-    LOG_ERROR,
-    LOG_FATAL_ERROR,
-} s_log_level;
+#define S_LOG_LEVELS_LIST   \
+    X_(LOG_FATAL, 0)        \
+    X_(LOG_ERROR, 1)        \
+    X_(LOG_WARNING, 2)      \
+    X_(LOG_INFO, 3)         \
+    X_(LOG_DEBUG, 4)        \
 
-void s_log(s_log_level level, const char *module_name, const char *fmt, ...);
+
+#define X_(name, value) name = value,
+enum s_log_level {
+    S_LOG_LEVELS_LIST
+};
+#undef X_
+
+#ifndef S_LOG_LEVELS_LIST_DEF__
+#undef S_LOG_LEVELS_LIST
+#endif /* S_LOG_LEVELS_LIST_DEF__ */
+
+void s_log(enum s_log_level level, const char *module_name,
+    const char *fmt, ...);
 
 #ifndef NDEBUG
 #define s_log_debug(...) \
@@ -42,8 +53,8 @@ noreturn void s_log_fatal(const char *module_name, const char *function_name,
     }                                                               \
 } while (0);
 
-void s_set_log_level(s_log_level new_log_level);
-s_log_level s_get_log_level(void);
+void s_set_log_level(enum s_log_level new_log_level);
+enum s_log_level s_get_log_level(void);
 
 i32 s_set_log_out_file(const char *file_path);
 i32 s_set_log_out_filep(FILE *fp);

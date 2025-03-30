@@ -1,5 +1,6 @@
 #ifndef U_HASHMAP_H_
 #define U_HASHMAP_H_
+#include "static-tests.h"
 
 #include "int.h"
 #include "linked-list.h"

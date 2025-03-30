@@ -79,7 +79,7 @@ void * hashmap_lookup_record(struct hashmap *map, const char *key)
 void hashmap_delete_record(struct hashmap *map, const char *key)
 {
     struct ll_node *node = lookup_bucket_list_node(map, key);
-    u_nzfree(&node->content);
+    u_nfree(&node->content);
     linked_list_destroy_node(&node);
 }
 

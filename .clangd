@@ -9,4 +9,6 @@ CompileFlags:
     - "-std=c11"
     - "-xc"
     - "-Wall"
+    - "-Wpedantic"
+    - "-Wextra"
     - "-DCGD_CONFIG_PLATFORM_LINUX_EVDEV_PS4_CONTROLLER_SUPPORT"

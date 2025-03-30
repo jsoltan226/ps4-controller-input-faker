@@ -82,7 +82,7 @@ void linked_list_recursive_destroy_nodes(struct ll_node **head_p, bool free_cont
     struct ll_node *curr_node = *head_p;
     while (curr_node != NULL) {
         struct ll_node *next_node = curr_node->next;
-        if (free_content) u_nzfree(&curr_node->content);
+        if (free_content) u_nfree(&curr_node->content);
         u_nzfree(&curr_node);
         curr_node = next_node;
     };

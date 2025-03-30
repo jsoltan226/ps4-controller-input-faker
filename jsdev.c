@@ -51,7 +51,7 @@ i32 joystick_dev_load(struct joystick_dev *jsdev,
     s_assert(!strncmp(evdev_path, "/dev/input/", u_strlen("/dev/input/")),
         "Invalid event device path \"%s\"", evdev_path);
     if (evdev_load(evdev_path + u_strlen("/dev/input/"),
-        &jsdev->evdev, EVDEV_TYPE_AUTO))
+        &jsdev->evdev, EVDEV_MASK_AUTO))
     {
         goto_error("Failed to load the joystick's (\"%s\" - %s) "
             "event device (%s)", jsdev->name, jsdev->path, evdev_path);
@@ -191,8 +191,15 @@ static i32 get_evdev_from_js(const char *js_rel_path,
     struct dirent *entry = NULL;
     while (entry = readdir(dir), entry != NULL) {
         if (!strncmp(entry->d_name, "event", u_strlen("event"))) {
-            (void) snprintf(o_evdev_path, evdev_path_buf_size,
+            i32 ret = snprintf(o_evdev_path, evdev_path_buf_size,
                 "/dev/input/%s", entry->d_name);
+            s_assert(ret != -1,
+                "snprintf(o_evdev_path, %u, /dev/input/%%s, %s) failed",
+                evdev_path_buf_size, entry->d_name);
+            if ((u32)ret > evdev_path_buf_size) {
+                s_log_error("snprintf output truncated");
+            }
+            o_evdev_path[evdev_path_buf_size - 1] = '\0';
             closedir(dir);
             return 0;
         }

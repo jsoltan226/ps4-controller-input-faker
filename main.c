@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#include "cfg.h"
 #define P_INTERNAL_GUARD__
 #include "evdev.h"
 #undef P_INTERNAL_GUARD__
@@ -8,6 +9,7 @@
 #include <core/log.h>
 #include <core/util.h>
 #include <core/vector.h>
+#include <core/buildtype.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,10 +22,6 @@
 
 #define MODULE_NAME "main"
 
-
-#define FAKE_KEYPRESS_EV_CODE KEY_F21
-#define WATCHED_DEVICE_TYPES (EVDEV_MASK_PS4_CONTROLLER)
-
 static i32 init_signal_handler(void);
 static void signal_handler(i32 sig_num);
 static atomic_flag running = ATOMIC_FLAG_INIT;
@@ -31,8 +29,9 @@ static atomic_flag running = ATOMIC_FLAG_INIT;
 static i32 handle_monitor_event(struct evdev_monitor *mon,
     VECTOR(struct evdev) *devices, VECTOR(struct pollfd) *poll_fds);
 
-static i32 handle_device_event(struct evdev *dev, i32 kbddev_fd);
-static i32 write_fake_event(i32 fd);
+static i32 handle_device_event(struct evdev *dev, i32 kbddev_fd,
+    u16 fake_keypress_keycode);
+static i32 write_fake_event(i32 fd, u16 key_code);
 
 #define pollfd_disconnected(pollfd) \
     (pollfd.revents & POLLERR       \
@@ -42,20 +41,31 @@ static i32 write_fake_event(i32 fd);
 static void handle_fd_disconnect(VECTOR(struct evdev) *devices,
     VECTOR(struct pollfd) *poll_fds, u32 device_index);
 
+static const char *buildtype = NULL;
+
 int main(int argc, char **argv)
 {
+    (void) argc;
+    (void) argv;
+    if (buildtype == NULL) buildtype = get_cgd_buildtype__();
+
     i32 ret = EXIT_FAILURE;
-    s_configure_log(LOG_DEBUG, stdout, stderr);
+    s_configure_log(LOG_INFO, stdout, stderr);
+
+    struct cfg cfg = { 0 };
+    if (read_config(&cfg)) /* On failure, default values will be used */
+        s_log_warn("Couldn't read the config properly");
+    s_set_log_level(cfg.log_level);
 
     if (init_signal_handler())
         goto_error("Failed to initialize the signal handler. Stop.");
 
     kbddev_t fake_keyboard = { 0 };
-    if (kbddev_init(&fake_keyboard))
+    if (kbddev_init(&fake_keyboard, cfg.fake_keypress_keycode))
         goto_error("Couldn't initialize the fake keyboard device. Stop.");
 
     VECTOR(struct evdev) devices =
-        evdev_find_and_load_devices(WATCHED_DEVICE_TYPES);
+        evdev_find_and_load_devices(EVDEV_MASK_PS4_CONTROLLER);
     if (devices == NULL)
         goto_error("Error while loading active event devices. Stop.");
     s_log_info("Loaded %u event device(s)", vector_size(devices));
@@ -111,10 +121,12 @@ int main(int argc, char **argv)
 
         /* Check the device fds */
         for (u32 i = 1; i < vector_size(global_poll_fds); i++) {
-            if (pollfd_disconnected(global_poll_fds[i]))
-                handle_fd_disconnect(&devices, &global_poll_fds, i);
-            else if (global_poll_fds[i].revents & POLLIN)
-                handle_device_event(&devices[i - 1], fake_keyboard.fd);
+            if (pollfd_disconnected(global_poll_fds[i])) {
+                handle_fd_disconnect(&devices, &global_poll_fds, i - 1);
+            } else if (global_poll_fds[i].revents & POLLIN) {
+                handle_device_event(&devices[i - 1], fake_keyboard.fd,
+                    cfg.fake_keypress_keycode);
+            }
             n_handled++;
             if (n_handled >= ret)
                 break;
@@ -169,9 +181,9 @@ static i32 handle_monitor_event(struct evdev_monitor *mon,
         struct evdev new_dev = { 0 };
         if (strncmp(created[i], "event", u_strlen("event"))) {
             /* Not an evdev */
-        } else if (evdev_load(created[i], &new_dev, WATCHED_DEVICE_TYPES)) {
-            //s_log_debug("Failed to load event device %s", created[i]);
-        } else {
+        } else if (evdev_load(created[i], &new_dev, EVDEV_MASK_PS4_CONTROLLER))
+            ;//s_log_debug("Failed to load event device %s", created[i]);
+        else {
             s_log_info("New device: \"%s\" (%s), type %s",
                 new_dev.name[0] ? new_dev.name : "n/a",
                 new_dev.path, evdev_type_strings[new_dev.type]
@@ -223,7 +235,8 @@ err:
     return 1;
 }
 
-static i32 handle_device_event(struct evdev *dev, i32 kbddev_fd)
+static i32 handle_device_event(struct evdev *dev, i32 kbddev_fd,
+    u16 fake_keypress_keycode)
 {
     struct input_event ev;
     i32 n_bytes_read = 0;
@@ -255,7 +268,7 @@ static i32 handle_device_event(struct evdev *dev, i32 kbddev_fd)
             if (!is_key_press)
                 continue;
 
-            if (write_fake_event(kbddev_fd))
+            if (write_fake_event(kbddev_fd, fake_keypress_keycode))
                 return 1;
         }
     } while (n_bytes_read > 0);
@@ -263,14 +276,14 @@ static i32 handle_device_event(struct evdev *dev, i32 kbddev_fd)
     return 0;
 }
 
-static i32 write_fake_event(i32 fd)
+static i32 write_fake_event(i32 fd, u16 key_code)
 {
     /* Key down */
     struct timeval time;
     (void) gettimeofday(&time, NULL);
     struct input_event press_ev = {
         .type = EV_KEY,
-        .code = FAKE_KEYPRESS_EV_CODE,
+        .code = key_code,
         .value = 1,
         .time = time,
     };
@@ -284,7 +297,7 @@ static i32 write_fake_event(i32 fd)
     (void) gettimeofday(&time, NULL);
     struct input_event release_ev = {
         .type = EV_KEY,
-        .code = FAKE_KEYPRESS_EV_CODE,
+        .code = key_code,
         .value = 0,
         .time = time,
     };
@@ -318,13 +331,19 @@ static void handle_fd_disconnect(VECTOR(struct evdev) *devices,
     const u32 di = device_index;
     const u32 pi = device_index + 1; /* skip the monitor pollfd */
 
-    /* Some kind of error occured on the fd */
+    /* Some kind of error occured on the fd
+     * (this usually happens when the device is normally disconnected,
+     * so nothing to worry about really) */
+    s_log_debug("vector_size(poll_fds) = %u", vector_size(*poll_fds));
     if ((*poll_fds)[pi].revents & POLLERR) {
-        s_log_error("Error on device %s (fd %i), disconnecting...");
+        s_log_info("Error on file descriptor %i (device %s - \"%s\"), "
+            "disconnecting...",
+            (*poll_fds)[pi].fd, (*devices)[di].path, (*devices)[di].name);
     }
     /* The device just disconnected, nothing super unusual */
     if ((*poll_fds)[pi].revents & POLLHUP) {
-        s_log_info("Device %s disconnected", (*devices)[di].path);
+        s_log_info("File descriptor %i (device %s - \"%s\") disconnected",
+            (*poll_fds)[pi].fd, (*devices)[di].path, (*devices)[di].name);
     }
     /* The fd is invalid (most likely a race condition/use-after-free) */
     if ((*poll_fds)[pi].revents & POLLNVAL) {

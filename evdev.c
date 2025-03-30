@@ -8,8 +8,6 @@
 #include <core/math.h>
 #include <core/vector.h>
 #include <stdbool.h>
-#include <stdlib.h>
-#include <stdio.h>
 #include <string.h>
 #include <errno.h>
 #include <dirent.h>
@@ -54,7 +52,7 @@ evdev_find_and_load_devices(enum evdev_type_mask type_mask)
     }
 
     u32 n_failed = 0;
-    for (u32 i = 0; i < n_dirents; i++) {
+    for (i32 i = 0; i < n_dirents; i++) {
         struct evdev tmp;
         i32 r = evdev_load(namelist[i]->d_name, &tmp, type_mask);
 
@@ -83,7 +81,7 @@ evdev_find_and_load_devices(enum evdev_type_mask type_mask)
     }
 
     /* Cleanup */
-    for (u32 i = 0; i < n_dirents; i++)
+    for (i32 i = 0; i < n_dirents; i++)
         u_nfree(&namelist[i]);
 
     u_nfree(&namelist);
@@ -93,7 +91,7 @@ evdev_find_and_load_devices(enum evdev_type_mask type_mask)
 
 err:
     if (namelist != NULL && n_dirents > -1) {
-        for (u32 i = 0; i < n_dirents; i++) {
+        for (i32 i = 0; i < n_dirents; i++) {
             u_nfree(&namelist[i]);
         }
         u_nfree(&namelist);
@@ -192,7 +190,7 @@ void evdev_destroy(struct evdev *e)
 {
     if (e == NULL || !e->initialized_) return;
 
-    if (e->fd < 0) {
+    if (e->fd >= 0) {
         close(e->fd);
         e->fd = -1;
     }
@@ -200,6 +198,7 @@ void evdev_destroy(struct evdev *e)
     memset(e->path, 0, u_FILEPATH_MAX);
     memset(e->name, 0, MAX_EVDEV_NAME_LEN);
     e->type = EVDEV_TYPE_UNKNOWN;
+    e->initialized_ = false;
 }
 
 static i32 dev_input_event_scandir_filter(const struct dirent *dirent)

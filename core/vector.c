@@ -14,9 +14,9 @@ typedef struct vector_metadata__ vector_meta_t;
 #define VECTOR_DEFAULT_CAPACITY 8
 
 #define get_metadata_ptr(v) \
-    ((vector_meta_t *)((u8 *)v - sizeof(vector_meta_t)))
+    ((vector_meta_t *)(((u8 *)v) - sizeof(vector_meta_t)))
 
-#define element_at(v, at) ((u8 *)v + (at * get_metadata_ptr(v)->item_size))
+#define element_at(v, at) (((u8 *)v) + (at * get_metadata_ptr(v)->item_size))
 
 void * vector_init(u32 item_size)
 {
@@ -24,13 +24,13 @@ void * vector_init(u32 item_size)
     s_assert(v != NULL, "malloc() failed for vector");
     memset(v, 0, sizeof(vector_meta_t) + (item_size * VECTOR_DEFAULT_CAPACITY));
 
-    vector_meta_t *metadata_ptr = v;
+    vector_meta_t *metadata_ptr = (vector_meta_t *)v;
     *(u32*)(&metadata_ptr->item_size) = item_size; /* Cast away `const` */
     metadata_ptr->n_items = 0;
     metadata_ptr->capacity = VECTOR_DEFAULT_CAPACITY;
 
-    v += sizeof(vector_meta_t);
-    return v;
+    u8 *const vector_base = ((u8 *)v) + sizeof(vector_meta_t);
+    return vector_base;
 }
 
 void * vector_increase_size__(void *v)
@@ -109,7 +109,7 @@ void * vector_end(void * v)
 {
     if (v == NULL) return NULL;
     vector_meta_t *meta = get_metadata_ptr(v);
-    return v + (meta->n_items * meta->item_size);
+    return ((u8 *)v) + (meta->n_items * meta->item_size);
 }
 
 void * vector_shrink_to_fit__(void *v)
@@ -166,13 +166,12 @@ void * vector_realloc__(void *v, u32 new_cap)
     meta_p = new_v;
     meta_p->capacity = new_cap;
 
-    new_v += sizeof(vector_meta_t);
-    return new_v;
+    return ((u8 *)new_v) + sizeof(vector_meta_t);
 }
 
 void * vector_resize__(void *v, u32 new_size)
 {
-    u_check_params(v != NULL && new_size >= 0);
+    u_check_params(v != NULL);
 
     vector_meta_t *meta = get_metadata_ptr(v);
 
